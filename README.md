@@ -157,3 +157,62 @@ copy the whole `Cookie` header of any `www.aliexpress.com` request in DevTools w
 - Guest prices vary between requests (new-user deals are shown to some guest sessions and not others).
   Use `--as-me` for the final candidates.
 - Two stores can share a name ("Ugreen Official Store" exists twice). Tell them apart by shop id and age.
+
+## Rozetka (rozetka.com.ua)
+
+```bash
+/home/pesua/Projects/assistant/marketplaces/bin/rozetka <command> [-h] [--json] [--delay [SECONDS]]
+```
+
+No account or key. **By default everything is limited to goods sold or handled by Rozetka ("Rozetka +")
+that are delivered free to Rozetka stores, and out-of-stock goods are hidden.** `--seller any|other|…`,
+`--any-delivery` and `--unavailable` lift those limits.
+
+### Rate limiting (mandatory)
+
+Same rules as Epicentr: append `--delay` (1.5 s) to every command when running several in a row, or set
+`ROZETKA_DELAY=1.5`. No parallel runs, no loops over dozens of products.
+
+### Workflow for an agent
+
+1. **City.** `city set "Дніпро"` (or `city find "Обухів"`, then `city set "Обухів" --pick N`). It is used
+   for the pickup term. Without it, Kyiv is used.
+2. **Category.** `search "query"` jumps into a category when the site would, or prints category ids.
+3. **Filters.** `filters <id>` shows the facets with counts.
+4. **Products.** `products <id> -f "Facet=Value" --brand X --price 1000-3000 --sort cheap [--sort-unit]`.
+5. **Details and compare.** `product <id> --reviews 5` and `compare <id> … --diff --delivery`.
+
+| Command | What it does |
+|---|---|
+| `city [show \| find NAME \| set NAME [--pick N]]` | City for delivery terms (`rozetka/.state.json`, gitignored) |
+| `search "query" [--brand X] [--price A-B] [--sort …]` | Search; may redirect into a category listing |
+| `filters <category> [filters…]` | Facets with counts, keys and applied values |
+| `products <category> [filters…] [--sort-unit] [--page N]` | Listing with prices, unit prices, seller and rating |
+| `product <id\|url> [--reviews N]` | Price, pickup term, variants, same model from other sellers, specs, description |
+| `compare <id> <id> … [--diff] [--delivery]` | Side-by-side markdown table |
+
+`<category>` is an id (`152499`), a site URL (its filters are kept) or `/ua/<slug>/c<id>/`.
+Filters: `-f "Джерело живлення=Акумулятор"`, `-f "Напруга=18|20"`, `-f "крутний=40..80"` (slider),
+`--brand Bosch`, `--price 1000-3000`, `--seller rozetka|other|rozetka_only|rozetka_fulfillment|rozetka_eu|any`,
+`--any-delivery`, `--sort rank|cheap|expensive|novelty`.
+
+Example:
+
+```bash
+R=/home/pesua/Projects/assistant/marketplaces/bin/rozetka
+$R city set "Дніпро" --delay
+$R search "шуруповерт" --delay
+$R products 152499 -f "Напруга=18" --brand DeWalt --sort cheap --delay
+$R compare 417079515 417079524 --diff --delivery --delay
+$R product 417079515 --reviews 5 --delay
+```
+
+### Gotchas
+
+- These are the site's private APIs (`common-api`, `product-api`, `search.rozetka.com.ua`). Paths can change without notice.
+- The listing total includes out-of-stock goods. The header says which pages have goods in stock.
+- If a filter value doesn't exist in the category, the site drops it (a warning is printed). If a search's filters match nothing, the site returns unfiltered results, and the CLI reports 0 results instead.
+- Search only knows the "Rozetka" / "other" seller values and a few facets. For specs, use a category listing.
+- Sponsored tiles, which ignore the filters, are removed from listings.
+- The site's "Доставка в магазини ROZETKA" facet also covers some supplier-shipped goods that can't be picked up in a store, and free pickup depends on the order total. `product` / `compare --delivery` show the real term and cost (or the cheapest alternative).
+- The unit price comes from the name or the selected variant's size, so an odd name can give a wrong or missing figure.
