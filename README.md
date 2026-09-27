@@ -77,3 +77,83 @@ $E product <slug> --stores 5 --reviews 5 --delay
 - The unit price is parsed from the pack size in the product name (`14 кг`, `250 шт`), so an odd name can give a wrong or missing figure.
 - `--sort-unit` only re-sorts the page you fetched.
 - `--address` sends the address you pass to OpenStreetMap Nominatim for geocoding.
+
+## AliExpress (aliexpress.com, ship-to Ukraine, UAH)
+
+```bash
+/home/pesua/Projects/assistant/marketplaces/bin/aliexpress <command> [-h] [--json] [--delay SECONDS]
+```
+
+Browsing works without an account. The account is optional and used only for your order history
+and for `--as-me` price checks. It reads the `aliexpress_cookie` variable from the repo's `.env`:
+copy the whole `Cookie` header of any `www.aliexpress.com` request in DevTools while logged in.
+
+### Rate limiting and captchas
+
+- Every command waits 2 s before each HTTP request (`--delay N` or `ALIEXPRESS_DELAY` to change it).
+  Never run commands in parallel.
+- AliExpress's anti-bot signs its internal (mtop) requests in page JavaScript, so plain HTTP soon gets
+  captchas (`RGV587`, `punish`). The client then switches to a real Chrome: headless, with an
+  AliExpress page open, it runs the same calls through the page's own `lib.mtop`. It skips plain HTTP
+  for the next 3 hours (`.cache/transport.json`). A command that needs the browser takes about 5 s longer.
+- If Chrome also hits a human check, a visible window opens by itself: pass the check (a slider or a
+  picture puzzle) and the command carries on. The window closes when the command ends.
+  `--no-browser` fails instead, and `unblock [--account]` opens the window on demand.
+- The browser profiles live in `.cache/browser-profile` and `.cache/browser-profile-account`.
+- The account session is read-only and capped at 80 requests a day (`ALIEXPRESS_ACCOUNT_DAILY_LIMIT`).
+  It never touches the cart, coupons, orders or messages. The first full history sync takes one
+  request per 10 orders (365 orders = 39 requests); later syncs usually take 2–3.
+
+### Workflow for an agent
+
+1. **Category.** `categories "usb c cable"` shows the categories a query lands in, with their ids.
+   `categories --find "cable"` searches the ones seen before, offline.
+2. **Filters.** `filters "usb c cable" --cat 100000356` lists brands, attributes, ship-from countries
+   and price bands. Results are cached for a day.
+3. **Listings.** `products "usb c cable" --cat 100000356 --brand UGREEN -f "Length=1 M" --sort orders [--clean] [--sort-score]`.
+   Each row shows the price, rating, "sold" and a score, plus flags explaining the bait.
+4. **Details.** Run `product <id> --reviews 10` on the finalists. It shows every variant with its
+   price, stock and purchase limit, the store, shipping to UA, specs, and which variants reviewers bought.
+5. **Compare.** `compare <id> <id> … --diff`.
+6. **Brand store.** `stores --brand UGREEN` finds who sells the brand, official stores first.
+   `store-products <shop id|product id> --find "cable"` lists a store's range with duplicates merged.
+7. **History.** `orders --find "кабель"` shows what you bought before, with the exact variant.
+   `product` and `store-products` mark items you already bought.
+
+| Command | What it does |
+|---|---|
+| `categories "query"` / `categories --find TEXT` | Shows a query's categories (ids for `--cat`), or searches the learnt category cache |
+| `filters "query" [--cat ID]` | Lists facets: brands, attributes, categories, ship-from, price bands |
+| `products "query" [--cat] [-f NAME=VAL] [--brand] [--sort best\|orders\|price_asc\|price_desc] [--price MIN-MAX] [--ship-from UA] [--choice] [--free-ship] [--four-stars] [--clean] [--sort-score] [--page N]` | Lists listings (60 a page) with bait flags and a score |
+| `product <id\|url> [--reviews N] [--desc [--images]] [--as-me]` | Shows variants (price, stock, limits, bulk tiers), bait flags, store, shipping, specs and reviews |
+| `reviews <id> [--filter all\|image\|additional\|local] [--page]` | `local` = buyers from Ukraine. Shows the star breakdown, review tags, reviews and the variants reviewers bought |
+| `compare <id> <id> … [--diff]` | Prints a side-by-side markdown table |
+| `store <product id\|shop id\|name>` | Shows the seller profile: age, % positive, sales, your purchases there |
+| `store-products <store> [--find] [--sort orders\|best\|new\|price_asc\|price_desc] [--filter free_ship\|top\|sale\|new]` | Lists a store's range with duplicates merged. The API ignores sorting, so `orders`/`price_*` re-sort the fetched page (40 items) |
+| `stores --brand X [--top 6]` | Finds the stores selling a brand, official first (cached 7 days) |
+| `orders [--find] [--since] [--status] [--sync\|--full\|--offline]` | Shows your order history from `.cache/orders.sqlite`, which syncs itself every 12 h |
+| `order <id>` | Shows one order's lines, subtotal/shipping/coupons/total, delivery estimate and tracking link (cached once final) |
+| `session [--check]` | Shows the cookie, today's account requests and the cache state |
+| `unblock [--account]` | Opens the Chrome window on demand and waits until a real request passes |
+
+### Bait flags
+
+| Flag | Meaning |
+|---|---|
+| `bulk` | The headline price is per piece but only from N pieces ("≥ 3 pieces"), or the product has quantity tiers |
+| `new-user price` | A welcome deal for new shoppers (often with "Max. 1 pcs/shopper"). Your real price is higher: check with `--as-me` |
+| `cheap-sku` / `decoy variants` | The headline price belongs to a variant far below the median, or to one named "only case", "no battery", "1pcs"… |
+| `multi-pack` / `pack of N` | Packs of different sizes; compare the price per piece |
+| `sold≫reviews` / `young store` | Popularity that the reviews or the store's age don't back up |
+
+### Gotchas
+
+- These are AliExpress's private endpoints (search page JSON, mtop, feedback). Paths and fields can change without notice.
+- Guest prices are often new-user deals. Store listings show both prices, and `store-products` prints the regular one.
+- A search card has no review count, so its score uses sales as a stand-in. `product` gives the real one.
+- There is no category tree endpoint. `categories` learns categories from the searches you run.
+- A search with few results is padded with loosely related items; `products` drops them.
+- Shipping is computed for the country the response names. `product` warns when that is not UA.
+- Guest prices vary between requests (new-user deals are shown to some guest sessions and not others).
+  Use `--as-me` for the final candidates.
+- Two stores can share a name ("Ugreen Official Store" exists twice). Tell them apart by shop id and age.
