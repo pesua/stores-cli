@@ -216,3 +216,51 @@ $R product 417079515 --reviews 5 --delay
 - Sponsored tiles, which ignore the filters, are removed from listings.
 - The site's "Доставка в магазини ROZETKA" facet also covers some supplier-shipped goods that can't be picked up in a store, and free pickup depends on the order total. `product` / `compare --delivery` show the real term and cost (or the cheapest alternative).
 - The unit price comes from the name or the selected variant's size, so an odd name can give a wrong or missing figure.
+
+## Prom.ua (prom.ua)
+
+```bash
+/home/pesua/Projects/assistant/marketplaces/bin/prom <command> [-h] [--json] [--delay [SECONDS]]
+```
+
+No account or key. It uses the site's GraphQL endpoint and shows names in Ukrainian. Listings show only
+goods in stock by default (`--any-stock` shows the rest). Every row shows the seller and its
+**minimum order sum**. `shop` searches one seller's store and helps top a cart up to that minimum.
+
+### Rate limiting (mandatory)
+
+Append `--delay` (1.5 s) to every command when running several in a row, or set `PROM_DELAY=1.5`. No
+parallel runs and no loops over dozens of products.
+
+| Command | What it does |
+|---|---|
+| `search "query" [filters…] [--sort cheap\|expensive\|new]` | Searches all sellers and prints category ids |
+| `filters ["query"] [--category ID] [--shop SELLER]` | Lists facets with counts for a search or for one store |
+| `product <id\|url> [--offers] [--reviews N]` | Shows price, seller, minimum order, delivery/payment, variants, specs, reviews. `--offers` lists all sellers of the model |
+| `compare <id> <id> … [--diff]` | Prints a side-by-side markdown table |
+| `shop <seller> [--find "query"] [--group G] [filters…]` | Shows the seller's card and its catalogue, or a search inside the store |
+| `shop --cart ID[xQTY] … [--fill] [--find "query"]` | Prints the cart total and the sum missing to the minimum order. `--fill` lists goods priced at least that much, cheapest first |
+
+`<seller>` is a company id (shown in rows as `[продавець id …]`), a company page URL, `cs<id>.prom.ua`
+or a product URL of that seller.
+Filters: `-f "Бренд=Flonal|Kamille"`, `-f "Висота=10..20"` (numeric), `-f "Додатково=Пром-оплата"`,
+`--brand X`, `--price 100-500`, `--delivery Rozetka`, `--category ID`, `--group "Кухонний посуд"` (shop).
+
+Example:
+
+```bash
+P=/home/pesua/Projects/assistant/marketplaces/bin/prom
+$P search "кришка для сковороди 32 см" --delay
+$P search "кришка 32 см" --category 15230302 --sort cheap --brand Kamille --delay
+$P product 1675348809 --offers --reviews 5 --delay
+$P shop --cart 1675348809 --fill --delay                       # what else to buy to reach 200 ₴
+$P shop --cart 1675348809 --find "прихватка" --delay
+```
+
+### Gotchas
+
+- These are the site's private APIs. The GraphQL field names can change without notice.
+- Sorting narrows a search to closer matches, so the total drops. Sorting combined with a numeric facet
+  sometimes returns no goods; the CLI then sorts an unsorted slice of up to 90 itself and warns.
+- `--offers` finds the other sellers by searching the product's name. A product with an unusual name may not be found.
+- A filter value the API didn't apply is reported as a warning.
