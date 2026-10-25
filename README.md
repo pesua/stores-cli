@@ -264,3 +264,77 @@ $P shop --cart 1675348809 --find "прихватка" --delay
   sometimes returns no goods; the CLI then sorts an unsorted slice of up to 90 itself and warns.
 - `--offers` finds the other sellers by searching the product's name. A product with an unusual name may not be found.
 - A filter value the API didn't apply is reported as a warning.
+
+## OLX (olx.ua)
+
+```bash
+/home/pesua/Projects/assistant/marketplaces/bin/olx <command> [-h] [--json] [--delay [SECONDS]]
+```
+
+No account or key. It only reads classified ads: no login, no phone numbers, no messages. Searches cover
+all of Ukraine unless you pass `--city` (with an optional `--radius`) or `--region`. Most ads are used goods
+from private sellers, so every row carries **risk flags** (`⚠`).
+
+### Rate limiting (mandatory)
+
+Append `--delay` (1.5 s) to every command when running several in a row, or set `OLX_DELAY=1.5`. No
+parallel runs and no loops over dozens of ads.
+
+| Command | What it does |
+|---|---|
+| `search ["query"] [filters…] [--sort new\|cheap\|expensive] [--all] [--title]` | Lists ads. Without `--category` it also prints the categories the query falls into. `--category` is repeatable (the searches are merged), `--all` loads every page (up to 1000 ads per search), `--title` keeps ads with every query word in the title |
+| `filters ["query"] [--category ID] [filters…]` | Lists the category's filters with counts, plus state, seller type and places |
+| `categories --find "words"` / `categories [ID] [--depth 2]` | Searches or browses the category tree (cached in `olx/.cache/` for a week) |
+| `geo "place"` | Lists matching cities and villages with ids for `--city` |
+| `product <id\|url> [--max-desc N] [--photos]` | Shows price, params, description, OLX Доставка, the seller card (age on OLX, last visit, rating, active ads) and flags |
+| `seller <user id> \| --ad <id\|url> [--find "query"]` | Shows the seller card and the seller's other ads |
+| `compare <id> <id> … [--diff]` | Prints a side-by-side markdown table |
+
+Filters: `--category ID|slug`, `-f "Марка ноутбуку=Lenovo|Dell"`, `-f "Рік випуску=2015..2018"` (ranges),
+`-f "Підійде геймерам=так"` (checkboxes), `--state new|used`, `--price 1000-3000`, `--private` / `--business`,
+`--delivery` (OLX Доставка only), `--city "Обухівка, Дніпровський" --radius 20`, `--region dnp`,
+`--url <olx.ua listing URL>` (takes the site's own filters), `--no-ads` (hides paid TOP ads).
+
+Finding every ad of a model: `olx search "epson v37" --category 3834 --category 3830 --all --title`.
+OLX's search is fuzzy ("V600" also returns other scanners), and sellers file the same goods under
+neighbouring categories (scanners under "Принтери / БФП" too).
+
+Example:
+
+```bash
+O=/home/pesua/Projects/assistant/marketplaces/bin/olx
+$O search "шуруповерт makita" --delay                      # prints Категорії [id]
+$O filters "шуруповерт makita" --category 657 --delay
+$O search "шуруповерт makita" --category 657 --state used --delivery --sort cheap --delay
+$O search велосипед --city Дніпро --radius 30 --delay         # rows show the distance in km
+$O product 936565403 --delay
+$O compare 938156858 927407815 --diff --delay
+```
+
+### Flags
+
+- `без OLX Доставки`: no buyer protection; the seller can only meet or ship against prepayment.
+- `новий акаунт (N дн.)`: the seller registered less than 30 days ago.
+- `продавець не заходив N дн.`: the seller hasn't visited for over 30 days, so the ad may be stale.
+- `підозріло дешево`: the price is under 40 % of the page median for new goods or next to another scam sign
+  (new account, no OLX Доставка), or under 25 % for other used goods. It's a common scam bait, but it
+  compares against the page, so a mixed page (accessories and devices) can trip it.
+- `рейтинг poor` / `fair`: the OLX seller score (`product`, `compare`).
+
+### Gotchas
+
+- These are the site's private APIs (`/api/v1/offers/`, the seller score on `khonor.eu-sharedservices.olxcdn.com`).
+  They can change without notice.
+- **Python's own HTTP clients get HTTP 403.** OLX's AWS WAF blocks Python's TLS fingerprint whatever the headers,
+  so the client uses `curl_cffi`. Don't switch it to `requests`.
+- A search returns at most 1000 ads. The header gives the real total, so narrow it with filters instead of paging further.
+  `--all` loads up to that limit, 50 ads per request (20 requests at most per category, so keep `--delay`).
+- Several `--category` values run one search each and merge them; `--sort` is then re-applied locally.
+- `--title` checks only the loaded ads: without `--all` that's one page.
+- `--sort cheap` adds a price floor of 1 ₴. Otherwise "обмін", "безкоштовно" and 0 ₴ ads come first.
+- Ads in USD or EUR show the UAH equivalent in listings; `product` and `compare` show only the original
+  currency (the single-ad API doesn't convert). Price filters and sorting use UAH.
+- `--sort new` sorts by the date an ad was last bumped, not created. Rows show both (`додано …, піднято …`).
+- Paid TOP ads (`реклама`) come on top of `--limit` and repeat across pages. `--no-ads` hides them.
+- Category filters and the category tree come from a listing page of the site, cached for a week. `categories --refresh` rebuilds the cache.
+- OLX categories are coarse ("Електроінструмент" covers drills and screwdrivers alike), so search by words inside a category.
