@@ -33,7 +33,8 @@ MAX_RESULTS = 1000
 CATALOG_CACHE = Path(__file__).with_name(".cache") / "catalog.json"
 CATALOG_TTL = 7 * 86400
 LABELLED = {"category", "category_without_exclusions", "region", "city", "district"}  # others fail with labels
-BASE62 = string.digits + string.ascii_lowercase + string.ascii_uppercase
+# OLX's own base62 order: v and w (V and W) are swapped, so plain base62 opens a different ad for ~1/3 of URLs
+BASE62 = (string.digits + string.ascii_lowercase + string.ascii_uppercase).translate(str.maketrans("vwVW", "wvWV"))
 
 
 class ApiError(RuntimeError):
@@ -183,7 +184,7 @@ class Olx:
 # --- references -----------------------------------------------------------
 
 def ad_id(ref):
-    """Numeric ad id from an id or an ad URL (…-ID11nJrB.html: base62 of the id)."""
+    """Numeric ad id from an id or an ad URL (…-ID11nJrB.html: the id in OLX's base62)."""
     ref = str(ref).strip()
     if ref.isdigit():
         return int(ref)
