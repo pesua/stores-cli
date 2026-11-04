@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
-# Wrapper so the CLI works from any directory with the project's uv environment.
-ROOT="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
-exec uv run -q --project "$ROOT" python "$ROOT/marketplaces/epicentrk/cli.py" "$@"
+# Wrapper so the CLI works from any directory with this repo's uv environment.
+ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+exec uv run -q --project "$ROOT" python "$ROOT/epicentrk/cli.py" "$@"

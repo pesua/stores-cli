@@ -7,7 +7,7 @@
 - Reviews come from feedback.aliexpress.com as plain JSON.
 
 Two sessions: an anonymous one for bulk browsing, and an account one (cookies from the
-`aliexpress_cookie` variable in the repo's .env) used only for the order history and for
+`aliexpress_cookie` variable in the .env file) used only for the order history and for
 "price as me" checks. The account session is read-only by design: no cart, coupon, order or
 message endpoints exist here.
 """
@@ -26,7 +26,8 @@ from curl_cffi import requests
 SITE = "https://www.aliexpress.com"
 ACS = "https://acs.aliexpress.com/h5"
 FEEDBACK = "https://feedback.aliexpress.com/pc/searchEvaluation.do"
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# .env is looked up in the marketplaces repo first, then in its parent repo (when vendored as a subfolder)
+ENV_FILES = [Path(__file__).resolve().parents[1] / ".env", Path(__file__).resolve().parents[2] / ".env"]
 HERE = Path(__file__).resolve().parent
 CACHE = HERE / ".cache"
 ANON_JAR = CACHE / "anon_cookies.json"
@@ -80,17 +81,18 @@ class LoginRequired(ApiError):
 
 
 def read_env_cookie():
-    """Raw Cookie header for the account session: env var, or the repo's .env file."""
+    """Raw Cookie header for the account session: env var, or the .env file."""
     for key in ("ALIEXPRESS_COOKIE", "aliexpress_cookie"):
         if os.environ.get(key):
             return os.environ[key].strip()
-    try:
-        for line in (REPO_ROOT / ".env").read_text().splitlines():
-            key, sep, value = line.partition("=")
-            if sep and key.strip().lower() == "aliexpress_cookie":
-                return value.strip().strip("'\"")
-    except FileNotFoundError:
-        pass
+    for env_file in ENV_FILES:
+        try:
+            for line in env_file.read_text().splitlines():
+                key, sep, value = line.partition("=")
+                if sep and key.strip().lower() == "aliexpress_cookie":
+                    return value.strip().strip("'\"")
+        except FileNotFoundError:
+            pass
     return None
 
 
@@ -129,7 +131,7 @@ class AliExpress:
         if account:
             raw = read_env_cookie()
             if not raw:
-                raise LoginRequired("no aliexpress_cookie in the repo's .env (copy the Cookie header "
+                raise LoginRequired("no aliexpress_cookie in the .env file (copy the Cookie header "
                                     "of any www.aliexpress.com request while logged in)")
             self._env_hash = hashlib.sha1(raw.encode()).hexdigest()
             for name, value in parse_cookie_header(raw).items():
@@ -265,7 +267,7 @@ class AliExpress:
             if "RGV587" in ret or "USER_VALIDATE" in ret:
                 raise CaptchaError(CAPTCHA_HINT)
             if "SESSION_EXPIRED" in ret or "NOT_LOGIN" in ret.upper() or "LOGIN" in ret.split("::")[0]:
-                raise LoginRequired(f"{api}: {ret} — refresh aliexpress_cookie in the repo's .env")
+                raise LoginRequired(f"{api}: {ret} — refresh aliexpress_cookie in the .env file")
             if not ret.startswith("SUCCESS"):
                 raise ApiError(f"{api}: {ret}")
             return j.get("data") or {}

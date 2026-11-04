@@ -148,7 +148,7 @@ class BrowserMtop:
             if ret.startswith("SUCCESS"):
                 return j.get("data") or {}
             if "SESSION_EXPIRED" in ret or "NOT_LOGIN" in ret.upper():
-                raise LoginRequired(f"{api}: {ret} — refresh aliexpress_cookie in the repo's .env")
+                raise LoginRequired(f"{api}: {ret} — refresh aliexpress_cookie in the .env file")
             if any(k in ret for k in ("RGV587", "USER_VALIDATE", "CLIENT_TIMEOUT", "CLIENT_ERROR")) and not self.headed:
                 self._escalate()
                 continue

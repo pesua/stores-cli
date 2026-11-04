@@ -2,16 +2,32 @@
 
 CLI tools a coding agent can use to shop for you: browse the catalogue, filter it, keep only what the
 nearby store has, and read and compare products. The agent-facing instructions live in the skill
-`.claude/skills/marketplace-shopping/SKILL.md`.
+`skill/SKILL.md`.
+
+## Setup
+
+Needs [uv](https://docs.astral.sh/uv/). The `bin/` wrappers create the environment on the first run.
+
+```bash
+uv sync                          # optional: the first CLI call does the same
+uv run playwright install chromium   # only for AliExpress captcha fallback (uses installed Chrome if present)
+```
+
+Add `bin/` to `PATH` or call the wrappers by their full path: they work from any directory.
+
+To use the skill with Claude Code, link it into a project or into `~/.claude/skills/`:
+
+```bash
+ln -s "$PWD/skill" ~/.claude/skills/marketplace-shopping
+```
 
 ## Epicentr (epicentrk.ua)
 
 ```bash
-/home/pesua/Projects/assistant/marketplaces/bin/epicentrk <command> [-h] [--json] [--delay [SECONDS]]
+bin/epicentrk <command> [-h] [--json] [--delay [SECONDS]]
 ```
 
-The wrapper runs `uv run --project <repo root>`, so this absolute path works from any directory
-or project. You don't need an account or API key. Every command's `-h` lists all its options.
+The wrapper runs `uv run --project <this repo>`, so it works from any directory or project. You don't need an account or API key. Every command's `-h` lists all its options.
 
 ### Rate limiting (mandatory)
 
@@ -27,7 +43,7 @@ or project. You don't need an account or API key. Every command's `-h` lists all
 
 1. **Store.** `epicentrk store` shows the saved store and makes no requests. If none is saved, ask the
    user where they are, run `stores --address "…"` (or `--city`, `--near`), and after they confirm,
-   `store set <id>`. The default is currently store 44, Дніпро, Запорізьке шосе, 62-К.
+   `store set <id>`.
 2. **Category.** Run `categories --find "words"`, which works offline once the cache is built.
    `[preset]` entries are ready-made filtered listings. Or use `search "query"`, which can redirect
    straight to a listing path. Search can't filter by pickup, so always finish with a category
@@ -60,7 +76,7 @@ Filters: `-f "Тип акумулятора=Li-ion"`, `-f "Ємність=2,0|4,
 Example:
 
 ```bash
-E=/home/pesua/Projects/assistant/marketplaces/bin/epicentrk
+E=bin/epicentrk
 $E stores --city Дніпро --delay && $E store set 44 --delay
 $E categories --find "фарба інтер'єрна" --delay
 $E products kraski --today --stock --sort-unit --limit 60 --delay
@@ -81,11 +97,11 @@ $E product <slug> --stores 5 --reviews 5 --delay
 ## AliExpress (aliexpress.com, ship-to Ukraine, UAH)
 
 ```bash
-/home/pesua/Projects/assistant/marketplaces/bin/aliexpress <command> [-h] [--json] [--delay SECONDS]
+bin/aliexpress <command> [-h] [--json] [--delay SECONDS]
 ```
 
 Browsing works without an account. The account is optional and used only for your order history
-and for `--as-me` price checks. It reads the `aliexpress_cookie` variable from the repo's `.env`:
+and for `--as-me` price checks. It reads the `aliexpress_cookie` variable from the environment or from `.env` in this repo (or in its parent repo, when this folder is vendored inside another one):
 copy the whole `Cookie` header of any `www.aliexpress.com` request in DevTools while logged in.
 
 ### Rate limiting and captchas
@@ -161,7 +177,7 @@ copy the whole `Cookie` header of any `www.aliexpress.com` request in DevTools w
 ## Rozetka (rozetka.com.ua)
 
 ```bash
-/home/pesua/Projects/assistant/marketplaces/bin/rozetka <command> [-h] [--json] [--delay [SECONDS]]
+bin/rozetka <command> [-h] [--json] [--delay [SECONDS]]
 ```
 
 No account or key. **By default everything is limited to goods sold or handled by Rozetka ("Rozetka +")
@@ -199,7 +215,7 @@ Filters: `-f "Джерело живлення=Акумулятор"`, `-f "На�
 Example:
 
 ```bash
-R=/home/pesua/Projects/assistant/marketplaces/bin/rozetka
+R=bin/rozetka
 $R city set "Дніпро" --delay
 $R search "шуруповерт" --delay
 $R products 152499 -f "Напруга=18" --brand DeWalt --sort cheap --delay
@@ -220,7 +236,7 @@ $R product 417079515 --reviews 5 --delay
 ## Prom.ua (prom.ua)
 
 ```bash
-/home/pesua/Projects/assistant/marketplaces/bin/prom <command> [-h] [--json] [--delay [SECONDS]]
+bin/prom <command> [-h] [--json] [--delay [SECONDS]]
 ```
 
 No account or key. It uses the site's GraphQL endpoint and shows names in Ukrainian. Listings show only
@@ -249,7 +265,7 @@ Filters: `-f "Бренд=Flonal|Kamille"`, `-f "Висота=10..20"` (numeric),
 Example:
 
 ```bash
-P=/home/pesua/Projects/assistant/marketplaces/bin/prom
+P=bin/prom
 $P search "кришка для сковороди 32 см" --delay
 $P search "кришка 32 см" --category 15230302 --sort cheap --brand Kamille --delay
 $P product 1675348809 --offers --reviews 5 --delay
@@ -268,7 +284,7 @@ $P shop --cart 1675348809 --find "прихватка" --delay
 ## OLX (olx.ua)
 
 ```bash
-/home/pesua/Projects/assistant/marketplaces/bin/olx <command> [-h] [--json] [--delay [SECONDS]]
+bin/olx <command> [-h] [--json] [--delay [SECONDS]]
 ```
 
 No account or key. It only reads classified ads: no login, no phone numbers, no messages. Searches cover
@@ -302,7 +318,7 @@ neighbouring categories (scanners under "Принтери / БФП" too).
 Example:
 
 ```bash
-O=/home/pesua/Projects/assistant/marketplaces/bin/olx
+O=bin/olx
 $O search "шуруповерт makita" --delay                      # prints Категорії [id]
 $O filters "шуруповерт makita" --category 657 --delay
 $O search "шуруповерт makita" --category 657 --state used --delivery --sort cheap --delay

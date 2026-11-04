@@ -1,0 +1,15 @@
+[project]
+name = "marketplaces"
+version = "0.1.0"
+description = "CLIs for searching Ukrainian marketplaces: Epicentr, Rozetka, Prom.ua, OLX, AliExpress"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.32.4",
+    "curl-cffi>=0.16.3",
+    "beautifulsoup4>=4.14.3",
+    "playwright>=1.42.0",
+]
+
+[tool.uv]
+package = false
