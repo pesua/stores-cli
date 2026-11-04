@@ -1,79 +1,108 @@
-# Marketplaces
+# Маркетплейси
 
-CLI tools a coding agent can use to shop for you: browse the catalogue, filter it, keep only what the
-nearby store has, and read and compare products. The agent-facing instructions live in the skill
-`skill/SKILL.md`.
+CLI-інструменти, якими агент для програмування може робити покупки за вас: переглядати каталог,
+фільтрувати його, залишати тільки те, що є в найближчому магазині, читати й порівнювати товари.
+Інструкції для агента лежать у скілі `skill/SKILL.md`.
 
-## Setup
+## Зміст
 
-Needs [uv](https://docs.astral.sh/uv/). The `bin/` wrappers create the environment on the first run.
+- [Встановлення](#setup)
+- [Епіцентр (epicentrk.ua)](#epicentr)
+  - [Обмеження частоти запитів](#epicentr-rate-limiting)
+  - [Порядок роботи для агента](#epicentr-workflow)
+  - [Нюанси](#epicentr-gotchas)
+- [AliExpress (aliexpress.com)](#aliexpress)
+  - [Обмеження частоти й капчі](#aliexpress-rate-limiting)
+  - [Порядок роботи для агента](#aliexpress-workflow)
+  - [Прапорці-приманки](#aliexpress-bait-flags)
+  - [Нюанси](#aliexpress-gotchas)
+- [Rozetka (rozetka.com.ua)](#rozetka)
+  - [Обмеження частоти запитів](#rozetka-rate-limiting)
+  - [Порядок роботи для агента](#rozetka-workflow)
+  - [Нюанси](#rozetka-gotchas)
+- [Prom.ua (prom.ua)](#prom)
+  - [Обмеження частоти запитів](#prom-rate-limiting)
+  - [Нюанси](#prom-gotchas)
+- [OLX (olx.ua)](#olx)
+  - [Обмеження частоти запитів](#olx-rate-limiting)
+  - [Прапорці ризику](#olx-flags)
+  - [Нюанси](#olx-gotchas)
+
+<a id="setup"></a>
+## Встановлення
+
+Потрібен [uv](https://docs.astral.sh/uv/). Обгортки з `bin/` створюють оточення під час першого запуску.
 
 ```bash
-uv sync                          # optional: the first CLI call does the same
-uv run playwright install chromium   # only for AliExpress captcha fallback (uses installed Chrome if present)
+uv sync                              # необов'язково: перший виклик CLI зробить те саме
+uv run playwright install chromium   # лише для обходу капч AliExpress (якщо встановлено Chrome, береться він)
 ```
 
-Add `bin/` to `PATH` or call the wrappers by their full path: they work from any directory.
+Додайте `bin/` у `PATH` або викликайте обгортки за повним шляхом: вони працюють з будь-якої теки.
 
-To use the skill with Claude Code, link it into a project or into `~/.claude/skills/`:
+Щоб користуватися скілом у Claude Code, зробіть на нього посилання в проекті або в `~/.claude/skills/`:
 
 ```bash
 ln -s "$PWD/skill" ~/.claude/skills/marketplace-shopping
 ```
 
-## Epicentr (epicentrk.ua)
+<a id="epicentr"></a>
+## Епіцентр (epicentrk.ua)
 
 ```bash
 bin/epicentrk <command> [-h] [--json] [--delay [SECONDS]]
 ```
 
-The wrapper runs `uv run --project <this repo>`, so it works from any directory or project. You don't need an account or API key. Every command's `-h` lists all its options.
+Обгортка запускає `uv run --project <ця репа>`, тож працює з будь-якої теки чи проекту. Акаунт і API-ключ
+не потрібні. `-h` кожної команди показує всі її параметри.
 
-### Rate limiting (mandatory)
+<a id="epicentr-rate-limiting"></a>
+### Обмеження частоти запитів (обов'язково)
 
-- **When you run several commands in a row, append `--delay` to every one.** It waits before each
-  HTTP request, including the first one (1.5 s without a value), so back-to-back invocations are
-  spaced out too. `EPICENTRK_DELAY=1.5` in the environment does the same.
-- Put `--delay` last, or give it a value (`--delay 1.5`). A bare `--delay` in front of a positional
-  argument tries to swallow it.
-- Never run commands in parallel, and don't loop over dozens of products one by one. Narrow the list
-  with filters first. This is a real shop's private API.
+- **Коли запускаєте кілька команд поспіль, додавайте `--delay` до кожної.** Він чекає перед кожним
+  HTTP-запитом, зокрема першим (1,5 с, якщо значення не вказане), тож проміжок є й між окремими
+  запусками. Змінна оточення `EPICENTRK_DELAY=1.5` робить те саме.
+- Ставте `--delay` в кінці або зі значенням (`--delay 1.5`). Голий `--delay` перед позиційним аргументом
+  спробує його «з'їсти».
+- Ніколи не запускайте команди паралельно й не перебирайте десятки товарів по одному. Спершу звузьте
+  список фільтрами. Це приватний API справжнього магазину.
 
-### Workflow for an agent
+<a id="epicentr-workflow"></a>
+### Порядок роботи для агента
 
-1. **Store.** `epicentrk store` shows the saved store and makes no requests. If none is saved, ask the
-   user where they are, run `stores --address "…"` (or `--city`, `--near`), and after they confirm,
-   `store set <id>`.
-2. **Category.** Run `categories --find "words"`, which works offline once the cache is built.
-   `[preset]` entries are ready-made filtered listings. Or use `search "query"`, which can redirect
-   straight to a listing path. Search can't filter by pickup, so always finish with a category
-   listing.
-3. **Filters.** `filters <category> --today` shows what you can narrow by, with counts.
-4. **Products.** `products <category> --today --stock [filters] [--sort asc] [--sort-unit] [--limit 60] [--page N]`.
-5. **Compare.** Run `compare <slug> … --diff` on the 2–5 shortlisted items.
-6. **Details.** `product <slug> --reviews 5 --stores 5` on the finalists: read the reviews and the kit
-   contents, check the modifications (another pack size or colour may be cheaper per unit, or in stock).
-7. **Recommend.** Give the price, the stock in the store, the URL, and why it beats the alternatives.
-   For bulk goods (paint, cement, screws, flooring), compare the unit price, not the sticker price.
+1. **Магазин.** `epicentrk store` показує збережений магазин і не робить запитів. Якщо магазин не
+   збережено, спитайте користувача, де він, запустіть `stores --address "…"` (або `--city`, `--near`),
+   а після підтвердження — `store set <id>`.
+2. **Категорія.** `categories --find "слова"` працює офлайн, щойно кеш зібрано. Записи `[preset]` — це
+   готові відфільтровані списки. Або `search "запит"`, який може одразу перекинути на список категорії.
+   Пошук не вміє фільтрувати за самовивозом, тому завжди закінчуйте списком категорії.
+3. **Фільтри.** `filters <category> --today` показує, за чим можна звузити, з кількістю товарів.
+4. **Товари.** `products <category> --today --stock [фільтри] [--sort asc] [--sort-unit] [--limit 60] [--page N]`.
+5. **Порівняння.** `compare <slug> … --diff` для 2–5 відібраних товарів.
+6. **Деталі.** `product <slug> --reviews 5 --stores 5` для фіналістів: прочитайте відгуки й комплектацію,
+   перегляньте модифікації (інша фасовка чи колір може бути дешевшою за одиницю або бути в наявності).
+7. **Рекомендація.** Назвіть ціну, наявність у магазині, посилання і чому цей товар кращий за альтернативи.
+   Для вагових і штучних товарів (фарба, цемент, саморізи, підлога) порівнюйте ціну за одиницю, а не
+   ціну на цінику.
 
-| Command | What it does |
+| Команда | Що робить |
 |---|---|
-| `stores --address "…" \| --city X \| --near LAT,LNG` | Lists stores, nearest first (`--type all` includes Експрес and pickup points) |
-| `store set <id>` / `store` | Saves or shows the default store (`epicentrk/.state.json`, gitignored) |
-| `categories --find "words"` | Searches the whole category tree, including preset filtered listings. Uses a local cache in `epicentrk/.cache/`, rebuilt weekly or with `--refresh` |
-| `categories [slug] [--depth 2]` | Browses the category tree |
-| `search "query" [--stock]` | Runs a full-text search, which may redirect to a category listing |
-| `filters <category> [--today] [filters…]` | Lists the available filters with counts |
-| `products <category> [--today] [--stock] [--sort-unit] [filters…]` | Lists products with unit prices. `--today` means "Забрати сьогодні" in the saved store |
-| `product <slug\|url> [--stores N] [--reviews N]` | Shows specs, description, modifications (size/weight/colour, each with its price and stock), stock nearby, and reviews |
-| `compare <slug> <slug> … [--diff]` | Prints a side-by-side markdown table of prices, stock and specs |
+| `stores --address "…" \| --city X \| --near LAT,LNG` | Список магазинів, найближчі першими (`--type all` додає Експрес і пункти видачі) |
+| `store set <id>` / `store` | Зберігає або показує магазин за замовчуванням (`epicentrk/.state.json`, у gitignore) |
+| `categories --find "слова"` | Шукає по всьому дереву категорій разом з готовими фільтрованими списками. Кеш у `epicentrk/.cache/` оновлюється щотижня або з `--refresh` |
+| `categories [slug] [--depth 2]` | Переглядає дерево категорій |
+| `search "запит" [--stock]` | Повнотекстовий пошук, може перекинути на список категорії |
+| `filters <category> [--today] [фільтри…]` | Доступні фільтри з кількістю товарів |
+| `products <category> [--today] [--stock] [--sort-unit] [фільтри…]` | Товари з ціною за одиницю. `--today` — це «Забрати сьогодні» у збереженому магазині |
+| `product <slug\|url> [--stores N] [--reviews N]` | Характеристики, опис, модифікації (розмір/вага/колір, кожна з ціною й наявністю), наявність поруч і відгуки |
+| `compare <slug> <slug> … [--diff]` | Markdown-таблиця з цінами, наявністю й характеристиками поруч |
 
-`<category>` can be a slug (`shurupoverty`), a site URL, or a listing path (`/shop/kraski/fs/cvet-belyy/`).
+`<category>` — це slug (`shurupoverty`), URL сайту або шлях списку (`/shop/kraski/fs/cvet-belyy/`).
 
-Filters: `-f "Тип акумулятора=Li-ion"`, `-f "Ємність=2,0|4,0"`, `-f "762=1.2..1.8"` (range), `--brand Makita`,
+Фільтри: `-f "Тип акумулятора=Li-ion"`, `-f "Ємність=2,0|4,0"`, `-f "762=1.2..1.8"` (діапазон), `--brand Makita`,
 `--price 1000-3000`, `--seller epicentrk|other`, `--promo економією`, `--sort asc|desc|rating|aktsii|new|amount`.
 
-Example:
+Приклад:
 
 ```bash
 E=bin/epicentrk
@@ -84,135 +113,148 @@ $E compare <slug1> <slug2> <slug3> --diff --delay
 $E product <slug> --stores 5 --reviews 5 --delay
 ```
 
-### Gotchas
+<a id="epicentr-gotchas"></a>
+### Нюанси
 
-- This is the site's private API (`api.epicentrk.ua`). Its paths and parameters can change without notice.
-- `--delay` and `--json` go after the subcommand (`epicentrk products … --delay`).
-- Stock only works for Epicentr's own goods. Marketplace goods (`mplc-…`) show `н/д`.
-- `search` can't filter by pickup. Take the category it suggests and run `products … --today`.
-- The unit price is parsed from the pack size in the product name (`14 кг`, `250 шт`), so an odd name can give a wrong or missing figure.
-- `--sort-unit` only re-sorts the page you fetched.
-- `--address` sends the address you pass to OpenStreetMap Nominatim for geocoding.
+- Це приватний API сайту (`api.epicentrk.ua`). Його шляхи й параметри можуть змінитися без попередження.
+- `--delay` і `--json` ставляться після підкоманди (`epicentrk products … --delay`).
+- Наявність показується тільки для власних товарів Епіцентру. Товари маркетплейсу (`mplc-…`) показують `н/д`.
+- `search` не фільтрує за самовивозом. Візьміть запропоновану категорію й запустіть `products … --today`.
+- Ціна за одиницю розбирається з фасовки в назві товару (`14 кг`, `250 шт`), тож нетипова назва може дати
+  хибне значення або жодного.
+- `--sort-unit` пересортовує лише завантажену сторінку.
+- `--address` надсилає вказану адресу в OpenStreetMap Nominatim для геокодування.
 
-## AliExpress (aliexpress.com, ship-to Ukraine, UAH)
+<a id="aliexpress"></a>
+## AliExpress (aliexpress.com, доставка в Україну, гривні)
 
 ```bash
 bin/aliexpress <command> [-h] [--json] [--delay SECONDS]
 ```
 
-Browsing works without an account. The account is optional and used only for your order history
-and for `--as-me` price checks. It reads the `aliexpress_cookie` variable from the environment or from `.env` in this repo (or in its parent repo, when this folder is vendored inside another one):
-copy the whole `Cookie` header of any `www.aliexpress.com` request in DevTools while logged in.
+Перегляд працює без акаунта. Акаунт необов'язковий і потрібен лише для вашої історії замовлень і для
+перевірки ціни через `--as-me`. Cookie береться зі змінної `aliexpress_cookie` в оточенні або з `.env` у цій
+репі (або в батьківській, якщо ця тека вкладена в іншу репу): скопіюйте весь заголовок `Cookie` будь-якого
+запиту до `www.aliexpress.com` у DevTools, коли ви залогінені.
 
-### Rate limiting and captchas
+<a id="aliexpress-rate-limiting"></a>
+### Обмеження частоти й капчі
 
-- Every command waits 2 s before each HTTP request (`--delay N` or `ALIEXPRESS_DELAY` to change it).
-  Never run commands in parallel.
-- AliExpress's anti-bot signs its internal (mtop) requests in page JavaScript, so plain HTTP soon gets
-  captchas (`RGV587`, `punish`). The client then switches to a real Chrome: headless, with an
-  AliExpress page open, it runs the same calls through the page's own `lib.mtop`. It skips plain HTTP
-  for the next 3 hours (`.cache/transport.json`). A command that needs the browser takes about 5 s longer.
-- If Chrome also hits a human check, a visible window opens by itself: pass the check (a slider or a
-  picture puzzle) and the command carries on. The window closes when the command ends.
-  `--no-browser` fails instead, and `unblock [--account]` opens the window on demand.
-- The browser profiles live in `.cache/browser-profile` and `.cache/browser-profile-account`.
-- The account session is read-only and capped at 80 requests a day (`ALIEXPRESS_ACCOUNT_DAILY_LIMIT`).
-  It never touches the cart, coupons, orders or messages. The first full history sync takes one
-  request per 10 orders (365 orders = 39 requests); later syncs usually take 2–3.
+- Кожна команда чекає 2 с перед кожним HTTP-запитом (змінити — `--delay N` або `ALIEXPRESS_DELAY`).
+  Ніколи не запускайте команди паралельно.
+- Антибот AliExpress підписує внутрішні (mtop) запити JavaScript-ом сторінки, тож звичайний HTTP швидко
+  отримує капчі (`RGV587`, `punish`). Тоді клієнт перемикається на справжній Chrome: у фоні, з відкритою
+  сторінкою AliExpress, він виконує ті самі виклики через `lib.mtop` самої сторінки. Наступні 3 години
+  звичайний HTTP пропускається (`.cache/transport.json`). Команда, якій потрібен браузер, триває приблизно
+  на 5 с довше.
+- Якщо й Chrome натрапляє на перевірку «чи ви людина», сам відкривається видиме вікно: пройдіть перевірку
+  (повзунок чи пазл), і команда продовжиться. Вікно закривається, коли команда завершується.
+  `--no-browser` натомість завершує команду з помилкою, а `unblock [--account]` відкриває вікно на вимогу.
+- Профілі браузера лежать у `.cache/browser-profile` і `.cache/browser-profile-account`.
+- Сесія акаунта лише читає дані й обмежена 80 запитами на день (`ALIEXPRESS_ACCOUNT_DAILY_LIMIT`).
+  Вона ніколи не чіпає кошик, купони, замовлення чи повідомлення. Перша повна синхронізація історії
+  займає один запит на 10 замовлень (365 замовлень = 39 запитів); наступні зазвичай 2–3.
 
-### Workflow for an agent
+<a id="aliexpress-workflow"></a>
+### Порядок роботи для агента
 
-1. **Category.** `categories "usb c cable"` shows the categories a query lands in, with their ids.
-   `categories --find "cable"` searches the ones seen before, offline.
-2. **Filters.** `filters "usb c cable" --cat 100000356` lists brands, attributes, ship-from countries
-   and price bands. Results are cached for a day.
-3. **Listings.** `products "usb c cable" --cat 100000356 --brand UGREEN -f "Length=1 M" --sort orders [--clean] [--sort-score]`.
-   Each row shows the price, rating, "sold" and a score, plus flags explaining the bait.
-4. **Details.** Run `product <id> --reviews 10` on the finalists. It shows every variant with its
-   price, stock and purchase limit, the store, shipping to UA, specs, and which variants reviewers bought.
-5. **Compare.** `compare <id> <id> … --diff`.
-6. **Brand store.** `stores --brand UGREEN` finds who sells the brand, official stores first.
-   `store-products <shop id|product id> --find "cable"` lists a store's range with duplicates merged.
-7. **History.** `orders --find "кабель"` shows what you bought before, with the exact variant.
-   `product` and `store-products` mark items you already bought.
+1. **Категорія.** `categories "usb c cable"` показує категорії, в які потрапляє запит, з їхніми id.
+   `categories --find "cable"` офлайн шукає серед уже бачених.
+2. **Фільтри.** `filters "usb c cable" --cat 100000356` показує бренди, атрибути, країни відправлення
+   й цінові діапазони. Результат кешується на добу.
+3. **Списки.** `products "usb c cable" --cat 100000356 --brand UGREEN -f "Length=1 M" --sort orders [--clean] [--sort-score]`.
+   Кожен рядок показує ціну, рейтинг, кількість продажів і оцінку, а також прапорці, що пояснюють приманку.
+4. **Деталі.** `product <id> --reviews 10` для фіналістів. Показує кожен варіант з ціною, наявністю й
+   лімітом покупки, магазин, доставку в Україну, характеристики й варіанти, які купували автори відгуків.
+5. **Порівняння.** `compare <id> <id> … --diff`.
+6. **Магазин бренду.** `stores --brand UGREEN` знаходить, хто продає бренд, офіційні магазини першими.
+   `store-products <shop id|product id> --find "cable"` показує асортимент магазину без дублікатів.
+7. **Історія.** `orders --find "кабель"` показує, що ви купували раніше, з точним варіантом.
+   `product` і `store-products` позначають товари, які ви вже купували.
 
-| Command | What it does |
+| Команда | Що робить |
 |---|---|
-| `categories "query"` / `categories --find TEXT` | Shows a query's categories (ids for `--cat`), or searches the learnt category cache |
-| `filters "query" [--cat ID]` | Lists facets: brands, attributes, categories, ship-from, price bands |
-| `products "query" [--cat] [-f NAME=VAL] [--brand] [--sort best\|orders\|price_asc\|price_desc] [--price MIN-MAX] [--ship-from UA] [--choice] [--free-ship] [--four-stars] [--clean] [--sort-score] [--page N]` | Lists listings (60 a page) with bait flags and a score |
-| `product <id\|url> [--reviews N] [--desc [--images]] [--as-me]` | Shows variants (price, stock, limits, bulk tiers), bait flags, store, shipping, specs and reviews |
-| `reviews <id> [--filter all\|image\|additional\|local] [--page]` | `local` = buyers from Ukraine. Shows the star breakdown, review tags, reviews and the variants reviewers bought |
-| `compare <id> <id> … [--diff]` | Prints a side-by-side markdown table |
-| `store <product id\|shop id\|name>` | Shows the seller profile: age, % positive, sales, your purchases there |
-| `store-products <store> [--find] [--sort orders\|best\|new\|price_asc\|price_desc] [--filter free_ship\|top\|sale\|new]` | Lists a store's range with duplicates merged. The API ignores sorting, so `orders`/`price_*` re-sort the fetched page (40 items) |
-| `stores --brand X [--top 6]` | Finds the stores selling a brand, official first (cached 7 days) |
-| `orders [--find] [--since] [--status] [--sync\|--full\|--offline]` | Shows your order history from `.cache/orders.sqlite`, which syncs itself every 12 h |
-| `order <id>` | Shows one order's lines, subtotal/shipping/coupons/total, delivery estimate and tracking link (cached once final) |
-| `session [--check]` | Shows the cookie, today's account requests and the cache state |
-| `unblock [--account]` | Opens the Chrome window on demand and waits until a real request passes |
+| `categories "запит"` / `categories --find TEXT` | Категорії запиту (id для `--cat`) або пошук у кеші вивчених категорій |
+| `filters "запит" [--cat ID]` | Фасети: бренди, атрибути, категорії, країна відправлення, цінові діапазони |
+| `products "запит" [--cat] [-f NAME=VAL] [--brand] [--sort best\|orders\|price_asc\|price_desc] [--price MIN-MAX] [--ship-from UA] [--choice] [--free-ship] [--four-stars] [--clean] [--sort-score] [--page N]` | Оголошення (60 на сторінку) з прапорцями-приманками й оцінкою |
+| `product <id\|url> [--reviews N] [--desc [--images]] [--as-me]` | Варіанти (ціна, наявність, ліміти, оптові ціни), прапорці-приманки, магазин, доставка, характеристики й відгуки |
+| `reviews <id> [--filter all\|image\|additional\|local] [--page]` | `local` = покупці з України. Розподіл зірок, теги відгуків, відгуки й варіанти, які купували |
+| `compare <id> <id> … [--diff]` | Markdown-таблиця товарів поруч |
+| `store <product id\|shop id\|name>` | Профіль продавця: вік, % позитивних, продажі, ваші покупки там |
+| `store-products <store> [--find] [--sort orders\|best\|new\|price_asc\|price_desc] [--filter free_ship\|top\|sale\|new]` | Асортимент магазину без дублікатів. API ігнорує сортування, тож `orders`/`price_*` пересортовують завантажену сторінку (40 товарів) |
+| `stores --brand X [--top 6]` | Магазини, що продають бренд, офіційні першими (кеш на 7 днів) |
+| `orders [--find] [--since] [--status] [--sync\|--full\|--offline]` | Ваша історія замовлень з `.cache/orders.sqlite`, яка сама синхронізується кожні 12 год |
+| `order <id>` | Рядки одного замовлення, сума/доставка/купони/разом, очікувана доставка й посилання на трекінг (кешується, коли замовлення завершене) |
+| `session [--check]` | Cookie, запити акаунта за сьогодні й стан кешу |
+| `unblock [--account]` | Відкриває вікно Chrome на вимогу й чекає, поки справжній запит пройде |
 
-### Bait flags
+<a id="aliexpress-bait-flags"></a>
+### Прапорці-приманки
 
-| Flag | Meaning |
+| Прапорець | Значення |
 |---|---|
-| `bulk` | The headline price is per piece but only from N pieces ("≥ 3 pieces"), or the product has quantity tiers |
-| `new-user price` | A welcome deal for new shoppers (often with "Max. 1 pcs/shopper"). Your real price is higher: check with `--as-me` |
-| `cheap-sku` / `decoy variants` | The headline price belongs to a variant far below the median, or to one named "only case", "no battery", "1pcs"… |
-| `multi-pack` / `pack of N` | Packs of different sizes; compare the price per piece |
-| `sold≫reviews` / `young store` | Popularity that the reviews or the store's age don't back up |
+| `bulk` | Ціна в заголовку — за штуку, але лише від N штук («≥ 3 шт»), або в товару є цінові пороги за кількістю |
+| `new-user price` | Вітальна пропозиція для нових покупців (часто з «Max. 1 pcs/shopper»). Ваша реальна ціна вища: перевірте з `--as-me` |
+| `cheap-sku` / `decoy variants` | Ціна в заголовку належить варіанту, що набагато дешевший за медіану, або варіанту з назвою «only case», «no battery», «1pcs»… |
+| `multi-pack` / `pack of N` | Набори різного розміру; порівнюйте ціну за штуку |
+| `sold≫reviews` / `young store` | Популярність, яку не підтверджують відгуки чи вік магазину |
 
-### Gotchas
+<a id="aliexpress-gotchas"></a>
+### Нюанси
 
-- These are AliExpress's private endpoints (search page JSON, mtop, feedback). Paths and fields can change without notice.
-- Guest prices are often new-user deals. Store listings show both prices, and `store-products` prints the regular one.
-- A search card has no review count, so its score uses sales as a stand-in. `product` gives the real one.
-- There is no category tree endpoint. `categories` learns categories from the searches you run.
-- A search with few results is padded with loosely related items; `products` drops them.
-- Shipping is computed for the country the response names. `product` warns when that is not UA.
-- Guest prices vary between requests (new-user deals are shown to some guest sessions and not others).
-  Use `--as-me` for the final candidates.
-- Two stores can share a name ("Ugreen Official Store" exists twice). Tell them apart by shop id and age.
+- Це приватні ендпоінти AliExpress (JSON сторінки пошуку, mtop, feedback). Шляхи й поля можуть змінитися без попередження.
+- Гостьові ціни часто є пропозиціями для нових користувачів. Списки магазину показують обидві ціни, а
+  `store-products` виводить звичайну.
+- У картці пошуку немає кількості відгуків, тож оцінка замість неї бере продажі. `product` дає справжню.
+- Ендпоінта з деревом категорій немає. `categories` вивчає категорії з пошуків, які ви запускаєте.
+- Пошук з малою кількістю результатів доповнюється слабко пов'язаними товарами; `products` їх відкидає.
+- Доставка рахується для країни, яку називає відповідь. `product` попереджає, якщо це не UA.
+- Гостьові ціни різняться між запитами (пропозиції для нових користувачів показуються одним гостьовим
+  сесіям і не показуються іншим). Для фінальних кандидатів використовуйте `--as-me`.
+- Два магазини можуть мати однакову назву («Ugreen Official Store» є двічі). Розрізняйте їх за shop id і віком.
 
+<a id="rozetka"></a>
 ## Rozetka (rozetka.com.ua)
 
 ```bash
 bin/rozetka <command> [-h] [--json] [--delay [SECONDS]]
 ```
 
-No account or key. **By default everything is limited to goods sold or handled by Rozetka ("Rozetka +")
-that are delivered free to Rozetka stores, and out-of-stock goods are hidden.** `--seller any|other|…`,
-`--any-delivery` and `--unavailable` lift those limits.
+Акаунт і ключ не потрібні. **За замовчуванням усе обмежено товарами, які продає або обробляє Rozetka
+(«Rozetka +») з безкоштовною доставкою в магазини Rozetka, а товари не в наявності приховано.**
+`--seller any|other|…`, `--any-delivery` і `--unavailable` знімають ці обмеження.
 
-### Rate limiting (mandatory)
+<a id="rozetka-rate-limiting"></a>
+### Обмеження частоти запитів (обов'язково)
 
-Same rules as Epicentr: append `--delay` (1.5 s) to every command when running several in a row, or set
-`ROZETKA_DELAY=1.5`. No parallel runs, no loops over dozens of products.
+Ті самі правила, що й для Епіцентру: додавайте `--delay` (1,5 с) до кожної команди, коли запускаєте кілька
+поспіль, або задайте `ROZETKA_DELAY=1.5`. Без паралельних запусків і без перебору десятків товарів.
 
-### Workflow for an agent
+<a id="rozetka-workflow"></a>
+### Порядок роботи для агента
 
-1. **City.** `city set "Дніпро"` (or `city find "Обухів"`, then `city set "Обухів" --pick N`). It is used
-   for the pickup term. Without it, Kyiv is used.
-2. **Category.** `search "query"` jumps into a category when the site would, or prints category ids.
-3. **Filters.** `filters <id>` shows the facets with counts.
-4. **Products.** `products <id> -f "Facet=Value" --brand X --price 1000-3000 --sort cheap [--sort-unit]`.
-5. **Details and compare.** `product <id> --reviews 5` and `compare <id> … --diff --delivery`.
+1. **Місто.** `city set "Дніпро"` (або `city find "Обухів"`, потім `city set "Обухів" --pick N`). Потрібне
+   для терміну самовивозу. Без нього береться Київ.
+2. **Категорія.** `search "запит"` переходить у категорію, коли так зробив би сайт, або виводить id категорій.
+3. **Фільтри.** `filters <id>` показує фасети з кількістю товарів.
+4. **Товари.** `products <id> -f "Фасет=Значення" --brand X --price 1000-3000 --sort cheap [--sort-unit]`.
+5. **Деталі й порівняння.** `product <id> --reviews 5` і `compare <id> … --diff --delivery`.
 
-| Command | What it does |
+| Команда | Що робить |
 |---|---|
-| `city [show \| find NAME \| set NAME [--pick N]]` | City for delivery terms (`rozetka/.state.json`, gitignored) |
-| `search "query" [--brand X] [--price A-B] [--sort …]` | Search; may redirect into a category listing |
-| `filters <category> [filters…]` | Facets with counts, keys and applied values |
-| `products <category> [filters…] [--sort-unit] [--page N]` | Listing with prices, unit prices, seller and rating |
-| `product <id\|url> [--reviews N]` | Price, pickup term, variants, same model from other sellers, specs, description |
-| `compare <id> <id> … [--diff] [--delivery]` | Side-by-side markdown table |
+| `city [show \| find NAME \| set NAME [--pick N]]` | Місто для термінів доставки (`rozetka/.state.json`, у gitignore) |
+| `search "запит" [--brand X] [--price A-B] [--sort …]` | Пошук; може перекинути на список категорії |
+| `filters <category> [фільтри…]` | Фасети з кількістю, ключами й застосованими значеннями |
+| `products <category> [фільтри…] [--sort-unit] [--page N]` | Список з цінами, ціною за одиницю, продавцем і рейтингом |
+| `product <id\|url> [--reviews N]` | Ціна, термін самовивозу, варіанти, та сама модель в інших продавців, характеристики, опис |
+| `compare <id> <id> … [--diff] [--delivery]` | Markdown-таблиця товарів поруч |
 
-`<category>` is an id (`152499`), a site URL (its filters are kept) or `/ua/<slug>/c<id>/`.
-Filters: `-f "Джерело живлення=Акумулятор"`, `-f "Напруга=18|20"`, `-f "крутний=40..80"` (slider),
+`<category>` — це id (`152499`), URL сайту (його фільтри зберігаються) або `/ua/<slug>/c<id>/`.
+Фільтри: `-f "Джерело живлення=Акумулятор"`, `-f "Напруга=18|20"`, `-f "крутний=40..80"` (повзунок),
 `--brand Bosch`, `--price 1000-3000`, `--seller rozetka|other|rozetka_only|rozetka_fulfillment|rozetka_eu|any`,
 `--any-delivery`, `--sort rank|cheap|expensive|novelty`.
 
-Example:
+Приклад:
 
 ```bash
 R=bin/rozetka
@@ -223,134 +265,153 @@ $R compare 417079515 417079524 --diff --delivery --delay
 $R product 417079515 --reviews 5 --delay
 ```
 
-### Gotchas
+<a id="rozetka-gotchas"></a>
+### Нюанси
 
-- These are the site's private APIs (`common-api`, `product-api`, `search.rozetka.com.ua`). Paths can change without notice.
-- The listing total includes out-of-stock goods. The header says which pages have goods in stock.
-- If a filter value doesn't exist in the category, the site drops it (a warning is printed). If a search's filters match nothing, the site returns unfiltered results, and the CLI reports 0 results instead.
-- Search only knows the "Rozetka" / "other" seller values and a few facets. For specs, use a category listing.
-- Sponsored tiles, which ignore the filters, are removed from listings.
-- The site's "Доставка в магазини ROZETKA" facet also covers some supplier-shipped goods that can't be picked up in a store, and free pickup depends on the order total. `product` / `compare --delivery` show the real term and cost (or the cheapest alternative).
-- The unit price comes from the name or the selected variant's size, so an odd name can give a wrong or missing figure.
+- Це приватні API сайту (`common-api`, `product-api`, `search.rozetka.com.ua`). Шляхи можуть змінитися без попередження.
+- Загальна кількість у списку враховує товари не в наявності. Заголовок показує, на яких сторінках є товари в наявності.
+- Якщо значення фільтра немає в категорії, сайт його відкидає (виводиться попередження). Якщо фільтрам
+  пошуку нічого не відповідає, сайт повертає нефільтровані результати, а CLI натомість показує 0 результатів.
+- Пошук знає лише значення продавця «Rozetka» / «other» і кілька фасетів. Для характеристик беріть список категорії.
+- Спонсорські плитки, які ігнорують фільтри, прибираються зі списків.
+- Фасет сайту «Доставка в магазини ROZETKA» охоплює й деякі товари, які відправляє постачальник і які не
+  можна забрати в магазині, а безкоштовність самовивозу залежить від суми замовлення. `product` /
+  `compare --delivery` показують справжній термін і вартість (або найдешевшу альтернативу).
+- Ціна за одиницю береться з назви або розміру вибраного варіанта, тож нетипова назва може дати хибне
+  значення або жодного.
 
+<a id="prom"></a>
 ## Prom.ua (prom.ua)
 
 ```bash
 bin/prom <command> [-h] [--json] [--delay [SECONDS]]
 ```
 
-No account or key. It uses the site's GraphQL endpoint and shows names in Ukrainian. Listings show only
-goods in stock by default (`--any-stock` shows the rest). Every row shows the seller and its
-**minimum order sum**. `shop` searches one seller's store and helps top a cart up to that minimum.
+Акаунт і ключ не потрібні. Працює через GraphQL-ендпоінт сайту й показує назви українською. За
+замовчуванням списки показують лише товари в наявності (`--any-stock` показує решту). Кожен рядок показує
+продавця і його **мінімальну суму замовлення**. `shop` шукає в магазині одного продавця й допомагає
+добрати кошик до цієї суми.
 
-### Rate limiting (mandatory)
+<a id="prom-rate-limiting"></a>
+### Обмеження частоти запитів (обов'язково)
 
-Append `--delay` (1.5 s) to every command when running several in a row, or set `PROM_DELAY=1.5`. No
-parallel runs and no loops over dozens of products.
+Додавайте `--delay` (1,5 с) до кожної команди, коли запускаєте кілька поспіль, або задайте `PROM_DELAY=1.5`.
+Без паралельних запусків і без перебору десятків товарів.
 
-| Command | What it does |
+| Команда | Що робить |
 |---|---|
-| `search "query" [filters…] [--sort cheap\|expensive\|new]` | Searches all sellers and prints category ids |
-| `filters ["query"] [--category ID] [--shop SELLER]` | Lists facets with counts for a search or for one store |
-| `product <id\|url> [--offers] [--reviews N]` | Shows price, seller, minimum order, delivery/payment, variants, specs, reviews. `--offers` lists all sellers of the model |
-| `compare <id> <id> … [--diff]` | Prints a side-by-side markdown table |
-| `shop <seller> [--find "query"] [--group G] [filters…]` | Shows the seller's card and its catalogue, or a search inside the store |
-| `shop --cart ID[xQTY] … [--fill] [--find "query"]` | Prints the cart total and the sum missing to the minimum order. `--fill` lists goods priced at least that much, cheapest first |
+| `search "запит" [фільтри…] [--sort cheap\|expensive\|new]` | Шукає в усіх продавців і виводить id категорій |
+| `filters ["запит"] [--category ID] [--shop SELLER]` | Фасети з кількістю для пошуку або для одного магазину |
+| `product <id\|url> [--offers] [--reviews N]` | Ціна, продавець, мінімальне замовлення, доставка/оплата, варіанти, характеристики, відгуки. `--offers` показує всіх продавців моделі |
+| `compare <id> <id> … [--diff]` | Markdown-таблиця товарів поруч |
+| `shop <seller> [--find "запит"] [--group G] [фільтри…]` | Картка продавця і його каталог або пошук у магазині |
+| `shop --cart ID[xQTY] … [--fill] [--find "запит"]` | Сума кошика й скільки бракує до мінімального замовлення. `--fill` показує товари щонайменше на цю суму, найдешевші першими |
 
-`<seller>` is a company id (shown in rows as `[продавець id …]`), a company page URL, `cs<id>.prom.ua`
-or a product URL of that seller.
-Filters: `-f "Бренд=Flonal|Kamille"`, `-f "Висота=10..20"` (numeric), `-f "Додатково=Пром-оплата"`,
-`--brand X`, `--price 100-500`, `--delivery Rozetka`, `--category ID`, `--group "Кухонний посуд"` (shop).
+`<seller>` — це id компанії (у рядках показаний як `[продавець id …]`), URL сторінки компанії,
+`cs<id>.prom.ua` або URL товару цього продавця.
+Фільтри: `-f "Бренд=Flonal|Kamille"`, `-f "Висота=10..20"` (числові), `-f "Додатково=Пром-оплата"`,
+`--brand X`, `--price 100-500`, `--delivery Rozetka`, `--category ID`, `--group "Кухонний посуд"` (для shop).
 
-Example:
+Приклад:
 
 ```bash
 P=bin/prom
 $P search "кришка для сковороди 32 см" --delay
 $P search "кришка 32 см" --category 15230302 --sort cheap --brand Kamille --delay
 $P product 1675348809 --offers --reviews 5 --delay
-$P shop --cart 1675348809 --fill --delay                       # what else to buy to reach 200 ₴
+$P shop --cart 1675348809 --fill --delay                       # що ще взяти, щоб набрати 200 ₴
 $P shop --cart 1675348809 --find "прихватка" --delay
 ```
 
-### Gotchas
+<a id="prom-gotchas"></a>
+### Нюанси
 
-- These are the site's private APIs. The GraphQL field names can change without notice.
-- Sorting narrows a search to closer matches, so the total drops. Sorting combined with a numeric facet
-  sometimes returns no goods; the CLI then sorts an unsorted slice of up to 90 itself and warns.
-- `--offers` finds the other sellers by searching the product's name. A product with an unusual name may not be found.
-- A filter value the API didn't apply is reported as a warning.
+- Це приватні API сайту. Назви полів GraphQL можуть змінитися без попередження.
+- Сортування звужує пошук до ближчих збігів, тож загальна кількість падає. Сортування разом з числовим
+  фасетом іноді не повертає товарів; тоді CLI сам сортує невідсортовану вибірку до 90 товарів і попереджає.
+- `--offers` шукає інших продавців за назвою товару. Товар з незвичною назвою може не знайтися.
+- Значення фільтра, яке API не застосувало, показується як попередження.
 
+<a id="olx"></a>
 ## OLX (olx.ua)
 
 ```bash
 bin/olx <command> [-h] [--json] [--delay [SECONDS]]
 ```
 
-No account or key. It only reads classified ads: no login, no phone numbers, no messages. Searches cover
-all of Ukraine unless you pass `--city` (with an optional `--radius`) or `--region`. Most ads are used goods
-from private sellers, so every row carries **risk flags** (`⚠`).
+Акаунт і ключ не потрібні. Інструмент лише читає оголошення: без входу, без номерів телефонів, без
+повідомлень. Пошук охоплює всю Україну, якщо не вказати `--city` (з необов'язковим `--radius`) або
+`--region`. Більшість оголошень — вживані товари від приватних продавців, тож кожен рядок має
+**прапорці ризику** (`⚠`).
 
-### Rate limiting (mandatory)
+<a id="olx-rate-limiting"></a>
+### Обмеження частоти запитів (обов'язково)
 
-Append `--delay` (1.5 s) to every command when running several in a row, or set `OLX_DELAY=1.5`. No
-parallel runs and no loops over dozens of ads.
+Додавайте `--delay` (1,5 с) до кожної команди, коли запускаєте кілька поспіль, або задайте `OLX_DELAY=1.5`.
+Без паралельних запусків і без перебору десятків оголошень.
 
-| Command | What it does |
+| Команда | Що робить |
 |---|---|
-| `search ["query"] [filters…] [--sort new\|cheap\|expensive] [--all] [--title]` | Lists ads. Without `--category` it also prints the categories the query falls into. `--category` is repeatable (the searches are merged), `--all` loads every page (up to 1000 ads per search), `--title` keeps ads with every query word in the title |
-| `filters ["query"] [--category ID] [filters…]` | Lists the category's filters with counts, plus state, seller type and places |
-| `categories --find "words"` / `categories [ID] [--depth 2]` | Searches or browses the category tree (cached in `olx/.cache/` for a week) |
-| `geo "place"` | Lists matching cities and villages with ids for `--city` |
-| `product <id\|url> [--max-desc N] [--photos]` | Shows price, params, description, OLX Доставка, the seller card (age on OLX, last visit, rating, active ads) and flags |
-| `seller <user id> \| --ad <id\|url> [--find "query"]` | Shows the seller card and the seller's other ads |
-| `compare <id> <id> … [--diff]` | Prints a side-by-side markdown table |
+| `search ["запит"] [фільтри…] [--sort new\|cheap\|expensive] [--all] [--title]` | Список оголошень. Без `--category` також виводить категорії, в які потрапляє запит. `--category` можна повторювати (пошуки об'єднуються), `--all` завантажує всі сторінки (до 1000 оголошень на пошук), `--title` залишає оголошення, де в назві є всі слова запиту |
+| `filters ["запит"] [--category ID] [фільтри…]` | Фільтри категорії з кількістю, а також стан, тип продавця й місця |
+| `categories --find "слова"` / `categories [ID] [--depth 2]` | Пошук або перегляд дерева категорій (кеш в `olx/.cache/` на тиждень) |
+| `geo "місце"` | Відповідні міста й села з id для `--city` |
+| `product <id\|url> [--max-desc N] [--photos]` | Ціна, параметри, опис, OLX Доставка, картка продавця (скільки на OLX, останній візит, рейтинг, активні оголошення) і прапорці |
+| `seller <user id> \| --ad <id\|url> [--find "запит"]` | Картка продавця і його інші оголошення |
+| `compare <id> <id> … [--diff]` | Markdown-таблиця оголошень поруч |
 
-Filters: `--category ID|slug`, `-f "Марка ноутбуку=Lenovo|Dell"`, `-f "Рік випуску=2015..2018"` (ranges),
-`-f "Підійде геймерам=так"` (checkboxes), `--state new|used`, `--price 1000-3000`, `--private` / `--business`,
-`--delivery` (OLX Доставка only), `--city "Обухівка, Дніпровський" --radius 20`, `--region dnp`,
-`--url <olx.ua listing URL>` (takes the site's own filters), `--no-ads` (hides paid TOP ads).
+Фільтри: `--category ID|slug`, `-f "Марка ноутбуку=Lenovo|Dell"`, `-f "Рік випуску=2015..2018"` (діапазони),
+`-f "Підійде геймерам=так"` (чекбокси), `--state new|used`, `--price 1000-3000`, `--private` / `--business`,
+`--delivery` (лише з OLX Доставкою), `--city "Обухівка, Дніпровський" --radius 20`, `--region dnp`,
+`--url <URL списку olx.ua>` (бере фільтри самого сайту), `--no-ads` (приховує платні ТОП-оголошення).
 
-Finding every ad of a model: `olx search "epson v37" --category 3834 --category 3830 --all --title`.
-OLX's search is fuzzy ("V600" also returns other scanners), and sellers file the same goods under
-neighbouring categories (scanners under "Принтери / БФП" too).
+Як знайти всі оголошення моделі: `olx search "epson v37" --category 3834 --category 3830 --all --title`.
+Пошук OLX нечіткий («V600» повертає й інші сканери), а продавці кладуть однакові товари в сусідні
+категорії (сканери — ще й у «Принтери / БФП»).
 
-Example:
+Приклад:
 
 ```bash
 O=bin/olx
-$O search "шуруповерт makita" --delay                      # prints Категорії [id]
+$O search "шуруповерт makita" --delay                      # виводить Категорії [id]
 $O filters "шуруповерт makita" --category 657 --delay
 $O search "шуруповерт makita" --category 657 --state used --delivery --sort cheap --delay
-$O search велосипед --city Дніпро --radius 30 --delay         # rows show the distance in km
+$O search велосипед --city Дніпро --radius 30 --delay         # рядки показують відстань у км
 $O product 936565403 --delay
 $O compare 938156858 927407815 --diff --delay
 ```
 
-### Flags
+<a id="olx-flags"></a>
+### Прапорці ризику
 
-- `без OLX Доставки`: no buyer protection; the seller can only meet or ship against prepayment.
-- `новий акаунт (N дн.)`: the seller registered less than 30 days ago.
-- `продавець не заходив N дн.`: the seller hasn't visited for over 30 days, so the ad may be stale.
-- `підозріло дешево`: the price is under 40 % of the page median for new goods or next to another scam sign
-  (new account, no OLX Доставка), or under 25 % for other used goods. It's a common scam bait, but it
-  compares against the page, so a mixed page (accessories and devices) can trip it.
-- `рейтинг poor` / `fair`: the OLX seller score (`product`, `compare`).
+- `без OLX Доставки`: немає захисту покупця; продавець може тільки зустрітися або відправити після передоплати.
+- `новий акаунт (N дн.)`: продавець зареєструвався менше 30 днів тому.
+- `продавець не заходив N дн.`: продавець не заходив понад 30 днів, тож оголошення може бути неактуальним.
+- `підозріло дешево`: ціна нижча за 40 % медіани сторінки для нових товарів або поруч з іншою ознакою
+  шахрайства (новий акаунт, без OLX Доставки), або нижча за 25 % для інших вживаних товарів. Це поширена
+  шахрайська приманка, але порівняння йде зі сторінкою, тож змішана сторінка (аксесуари разом із
+  пристроями) може дати хибне спрацювання.
+- `рейтинг poor` / `fair`: оцінка продавця на OLX (`product`, `compare`).
 
-### Gotchas
+<a id="olx-gotchas"></a>
+### Нюанси
 
-- These are the site's private APIs (`/api/v1/offers/`, the seller score on `khonor.eu-sharedservices.olxcdn.com`).
-  They can change without notice.
-- **Python's own HTTP clients get HTTP 403.** OLX's AWS WAF blocks Python's TLS fingerprint whatever the headers,
-  so the client uses `curl_cffi`. Don't switch it to `requests`.
-- A search returns at most 1000 ads. The header gives the real total, so narrow it with filters instead of paging further.
-  `--all` loads up to that limit, 50 ads per request (20 requests at most per category, so keep `--delay`).
-- Several `--category` values run one search each and merge them; `--sort` is then re-applied locally.
-- `--title` checks only the loaded ads: without `--all` that's one page.
-- `--sort cheap` adds a price floor of 1 ₴. Otherwise "обмін", "безкоштовно" and 0 ₴ ads come first.
-- Ads in USD or EUR show the UAH equivalent in listings; `product` and `compare` show only the original
-  currency (the single-ad API doesn't convert). Price filters and sorting use UAH.
-- `--sort new` sorts by the date an ad was last bumped, not created. Rows show both (`додано …, піднято …`).
-- Paid TOP ads (`реклама`) come on top of `--limit` and repeat across pages. `--no-ads` hides them.
-- Category filters and the category tree come from a listing page of the site, cached for a week. `categories --refresh` rebuilds the cache.
-- OLX categories are coarse ("Електроінструмент" covers drills and screwdrivers alike), so search by words inside a category.
+- Це приватні API сайту (`/api/v1/offers/`, оцінка продавця на `khonor.eu-sharedservices.olxcdn.com`).
+  Вони можуть змінитися без попередження.
+- **Власні HTTP-клієнти Python отримують HTTP 403.** AWS WAF на OLX блокує TLS-відбиток Python незалежно
+  від заголовків, тому клієнт використовує `curl_cffi`. Не переводьте його на `requests`.
+- Пошук повертає щонайбільше 1000 оголошень. Заголовок показує справжню кількість, тож звужуйте фільтрами,
+  а не гортайте далі. `--all` завантажує до цієї межі по 50 оголошень за запит (щонайбільше 20 запитів на
+  категорію, тож не прибирайте `--delay`).
+- Кілька значень `--category` запускають по пошуку на кожне й об'єднують результати; `--sort` тоді
+  застосовується локально.
+- `--title` перевіряє лише завантажені оголошення: без `--all` це одна сторінка.
+- `--sort cheap` додає нижню межу ціни 1 ₴. Інакше першими йдуть «обмін», «безкоштовно» й оголошення за 0 ₴.
+- Оголошення в доларах чи євро показують еквівалент у гривнях у списках; `product` і `compare` показують
+  лише оригінальну валюту (API одного оголошення не конвертує). Цінові фільтри й сортування працюють у гривнях.
+- `--sort new` сортує за датою останнього підняття оголошення, а не створення. Рядки показують обидві
+  (`додано …, піднято …`).
+- Платні ТОП-оголошення (`реклама`) йдуть понад `--limit` і повторюються на різних сторінках. `--no-ads` їх приховує.
+- Фільтри категорій і дерево категорій беруться зі сторінки списку на сайті й кешуються на тиждень.
+  `categories --refresh` перебудовує кеш.
+- Категорії OLX грубі («Електроінструмент» охоплює і дрилі, і шуруповерти), тож шукайте словами всередині категорії.
