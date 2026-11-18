@@ -56,6 +56,7 @@ class Epicentrk:
             "x-is-robot": "0",
         })
         self._csrf = False
+        self.request_count = 0  # every HTTP request made, the CSRF handshake included
 
     def _throttle(self):
         if not self.delay:
@@ -70,6 +71,7 @@ class Epicentrk:
         if self._csrf:
             return
         self._throttle()
+        self.request_count += 1
         self.s.get(API + "/sanctum/csrf-cookie", timeout=self.timeout).raise_for_status()
         token = self.s.cookies.get("XSRF-TOKEN")
         if not token:
@@ -80,6 +82,7 @@ class Epicentrk:
     def _request(self, method, path, **kw):
         self._ensure_session()
         self._throttle()
+        self.request_count += 1
         r = self.s.request(method, API + path, timeout=self.timeout, **kw)
         try:
             data = r.json()

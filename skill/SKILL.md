@@ -61,10 +61,18 @@ hammer it.
    confirm, run `epicentrk store set <id>`. The store is saved and used by every later command.
    `--type 1` (the default) lists hypermarkets only; `--type all` includes Експрес shops and pickup points.
 2. **Category.** Find the listing:
-   - `epicentrk categories --find "<words>"` searches the whole tree (~3.3k categories + ~19k presets)
-     from a local cache. It is built on the first use (~550 requests); later lookups are free.
-     `[preset]` entries are ready-made filtered listings, e.g. "Плитка для ванної".
-     Refresh the cache with `--refresh` if it looks stale (it auto-refreshes weekly).
+   - `epicentrk categories --find "<product words>"` resolves a product query to a listing in at
+     most 4 requests. The site search names the category (the categories of the goods it found,
+     biggest first, or a redirect target), then only that category is read for the subcategories
+     and `[preset]` entries (ready-made filtered listings, e.g. "Сковорідки Вок",
+     "Плитка для ванної") whose names match the words. Pass any printed `/shop/…` path to
+     `filters` and `products`.
+   - Listings seen along the way are remembered locally. A later lookup whose words match a
+     remembered name prints `From the local cache … 0 requests`. Add `--live` when that answer is
+     not what you need. `--expand 2` also reads the second suggested category, `--expand 0` stops
+     after the search (2 requests), `--offline` uses the cache only.
+   - Never run `epicentrk categories --full-crawl` to find a category. It crawls the whole tree
+     (~550 requests, 10–15 minutes with `--delay`); only the user starts it, on purpose.
    - `epicentrk search "<query>"` can **redirect** straight to a listing path, or print
      `Category: … → /shop/<slug>/` suggestions.
    - `epicentrk categories [slug]` browses the tree step by step.

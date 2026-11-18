@@ -8,7 +8,7 @@ Run `epicentrk <command> -h` for details. Typical flow:
   epicentrk products shurupoverty --today -f "Тип акумулятора=Li-ion" --brand Makita --stock
   epicentrk product <slug> --stores 5 --reviews 5
   epicentrk compare <slug1> <slug2> [<slug3> ...] --diff
-  epicentrk categories --find "ламінат"
+  epicentrk categories --find "ламінат"                 # or let it resolve the listing for you
 
 Running several commands in a row? Append --delay to each one (a pause before every request).
 """
@@ -32,7 +32,6 @@ from client import (KYIV_CITY_ID, STORE_TYPES, ApiError, Epicentrk, listing_path
 
 STATE_FILE = Path(__file__).with_name(".state.json")
 CATEGORY_CACHE = Path(__file__).with_name(".cache") / "categories.json"
-CATEGORY_CACHE_TTL = 7 * 86400
 DEFAULT_DELAY = 1.5
 SORTS = ["rating", "asc", "desc", "aktsii", "new", "amount"]
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -349,22 +348,261 @@ def cell(value, width):
     return text if not width or len(text) <= width else text[: width - 1] + "…"
 
 
-# --- category index ---------------------------------------------------------
+# --- category lookup --------------------------------------------------------
+#
+# `categories --find` asks the site search (at most 4 requests) and never needs the whole tree.
+# .cache/categories.json only remembers listings seen along the way, so a repeated lookup is free.
+# The whole tree is crawled only by an explicit `categories --full-crawl`.
 
-def build_category_index(api):
-    """Walk the whole catalogue (≈700 requests) into a flat list of listings with breadcrumbs."""
-    index, seen, queue, queued = [], set(), [], set()
+KIND_RANK = {"final": 0, "section": 1, "portal": 2, "preset": 3}
+CRAWL_BATCH = 20  # progress is saved after every batch
+
+
+def load_category_cache():
+    try:
+        cache = json.loads(CATEGORY_CACHE.read_text())
+        if isinstance(cache.get("items"), list):
+            return cache
+    except (FileNotFoundError, ValueError, AttributeError):
+        pass
+    return {"built": None, "items": []}
+
+
+def save_category_cache(cache):
+    """Atomic write; a cache that can't be written must never break a command."""
+    try:
+        CATEGORY_CACHE.parent.mkdir(exist_ok=True)
+        tmp = CATEGORY_CACHE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(cache, ensure_ascii=False))
+        tmp.replace(CATEGORY_CACHE)
+    except OSError as e:
+        print(f"(category cache not saved: {e})", file=sys.stderr)
+
+
+def cache_entries(cache):
+    """Everything known locally: the lazily collected listings plus an unfinished full crawl."""
+    return cache["items"] + ((cache.get("crawl") or {}).get("items") or [])
+
+
+def category_entry(item, crumbs):
+    """A catalog API item -> index entry, or None for items without a listing."""
+    if not item.get("url") or not item.get("name"):
+        return None
+    kind = {"filters": "preset", "portalpage": "portal"}.get(item.get("type")) or \
+        ("final" if item.get("final") else "section")
+    return {"name": item["name"].strip(), "path": listing_path(item["url"]), "crumbs": crumbs, "kind": kind}
+
+
+def merge_entries(items, entries):
+    """Upsert entries into the list by path. Returns how many entries were added or improved."""
+    by_path = {e["path"]: e for e in items}
+    changed = 0
+    for e in entries:
+        if not e["name"]:
+            continue  # a bare redirect target: nothing to match a later query against
+        old = by_path.get(e["path"])
+        if old is None:
+            items.append(e)
+            by_path[e["path"]] = e
+            changed += 1
+        else:
+            # The search knows only the top-level parent; keep the fuller breadcrumbs.
+            new = dict(e, crumbs=max(e["crumbs"], old["crumbs"], key=len))
+            if new != old:
+                old.clear()
+                old.update(new)
+                changed += 1
+    return changed
+
+
+def remember_categories(entries):
+    """Add listings learnt from a response that was fetched anyway to the local cache."""
+    keep = ("name", "path", "crumbs", "kind")
+    entries = [{k: v for k, v in e.items() if k in keep} for e in entries if e]
+    if not entries:
+        return
+    cache = load_category_cache()
+    if merge_entries(cache["items"], entries):
+        save_category_cache(cache)
+
+
+def catalog_entries(data, known=(), crumbs=None):
+    """Index entries from one /catalog response: the category itself, its children and their presets.
+
+    The response has no breadcrumbs: pass the category's own `crumbs`, or they are taken from what
+    is already known."""
+    item = data.get("item") or {}
+    out = []
+    if item.get("url"):
+        path = listing_path(item["url"])
+        if crumbs is None:
+            crumbs = next((e["crumbs"] for e in known if e["path"] == path and e["crumbs"]), [])
+        out.append(category_entry(item, crumbs))
+        crumbs = crumbs + [item["name"].strip()]
+    crumbs = crumbs or []
+
+    def walk(items, crumbs):
+        for it in items or []:
+            out.append(category_entry(it, crumbs))
+            walk(it.get("subItems"), crumbs + [(it.get("name") or "").strip()])
+
+    walk(data.get("subItems"), crumbs)
+    return [e for e in out if e]
+
+
+def search_entries(data):
+    """Listings the site search points at, best first: a redirect target, or the categories of the
+    goods it found, ranked by how many of those goods each one holds (`found`)."""
+    if data.get("direct"):
+        return [{"name": "", "path": listing_path(data["direct"]), "crumbs": [], "kind": "section",
+                 "found": None}]
+    d = data.get("data") or {}
+    if not isinstance(d, dict):
+        return []
+    found = {}
+    for it in d.get("items") or []:
+        found[it.get("categoryId")] = found.get(it.get("categoryId"), 0) + 1
+    tops = {sub.get("sectionId"): [top["name"].strip()] for top in d.get("sectionFilter") or []
+            for sub in top.get("list") or [] if top.get("name")}
+    out = []
+    for s in d.get("horizontalSections") or []:
+        if s.get("to") and s.get("name"):
+            out.append({"name": s["name"].strip().removeprefix("Всі ").strip(), "path": listing_path(s["to"]),
+                        "crumbs": tops.get(s.get("id"), []), "kind": "final" if s.get("final") else "section",
+                        "found": found.get(s.get("id"), 0)})
+    return sorted(out, key=lambda e: -e["found"])
+
+
+def query_stems(query):
+    # Crude stemming so "ламінату" finds "Ламінат": compare word prefixes.
+    # Capped at 6 letters, so "сковорода" also finds "Сковорідки".
+    return [w[: min(max(4, len(w) - 2), 6)] for w in query.casefold().split()]
+
+
+def find_categories(index, query, names_only=False):
+    stems = query_stems(query)
+    hits = []
+    for e in index:
+        name = e["name"].casefold()
+        if all(s in name for s in stems):
+            score = 0
+        elif not names_only and all(s in " ".join(e["crumbs"] + [e["name"]]).casefold() for s in stems):
+            score = 1
+        else:
+            continue
+        hits.append((score, KIND_RANK.get(e["kind"], 9), len(name), e))
+    return [h[-1] for h in sorted(hits, key=lambda h: h[:3])]
+
+
+def category_slug(path):
+    """/shop/<slug>/... -> <slug>; None for portal pages, brands and other non-category paths."""
+    m = re.match(r"/shop/([^/]+)/", path)
+    return m.group(1) if m else None
+
+
+def clean_crumb(name):
+    """Breadcrumb names on the site end with an emoji: "Посуд 🍴" -> "Посуд"."""
+    name = name.strip()
+    while name and not (name[-1].isalnum() or name[-1] in ")»\"'’%"):
+        name = name[:-1].rstrip()
+    return name
+
+
+def expand_category(api, target, known):
+    """Subcategories and presets of one category, read with 1-2 requests.
+
+    A category with subcategories lists them, with their presets, in its own /catalog response.
+    A final category's presets are listed only in its parent's response, so the parent is looked up
+    in the cache or, failing that, in the listing's breadcrumbs. Returns (entries, slug to browse)."""
+    slug = category_slug(target["path"])
+    base = f"/shop/{slug}/"
+    cached = next((e for e in known if e["path"] == base), None)
+    kind = target["kind"] if target["path"] == base and target["name"] else (cached or {}).get("kind")
+    entries = []
+    if kind == "section":
+        return catalog_entries(api.catalog(slug), known), slug
+    # Final category (or a redirect target of unknown kind): find the parent.
+    crumbs = (cached or {}).get("crumbs") or []
+    parent = next((e for e in known if crumbs and e["kind"] == "section" and e["name"] == crumbs[-1]
+                   and e["crumbs"] == crumbs[:-1] and category_slug(e["path"])), None)
+    if parent:
+        parent_slug, parent_crumbs = category_slug(parent["path"]), parent["crumbs"]
+    else:
+        sdata = api.section_data(base)
+        trail = [(clean_crumb(c.get("name") or ""), listing_path(c["url"]))
+                 for c in sdata.get("breadcrumbs") or [] if c.get("url") and "/shop/" in c["url"]]
+        trail = [(n, p) for n, p in trail if category_slug(p)]  # drops the "Каталог" root
+        if trail and trail[-1][1] == base:
+            trail.pop()
+        if not trail:  # a top-level category after all
+            return catalog_entries(api.catalog(slug), known), slug
+        crumbs = [n for n, _ in trail]
+        parent_slug, parent_crumbs = category_slug(trail[-1][1]), crumbs[:-1]
+        own = clean_crumb(sdata.get("sectionName") or "") or target["name"]
+        if own:
+            entries.append({"name": own, "path": base, "crumbs": crumbs, "kind": "final"})
+            # "Interlinks" are extra ready-made filtered listings shown on the category page.
+            entries += [{"name": i["name"].strip(), "path": listing_path(i["link"]), "crumbs": crumbs + [own],
+                         "kind": "preset"} for i in sdata.get("interlinks") or [] if i.get("name") and i.get("link")]
+    entries += catalog_entries(api.catalog(parent_slug), known, parent_crumbs)
+    return entries, parent_slug
+
+
+def find_live(api, query, store_id=None, expand=1):
+    """Resolve a product query through the site search, then read only the matching category.
+
+    Returns (targets, related, hint): the listings the search points at; the subcategories/presets
+    of the first `expand` of them whose names match the query; and the slug to browse for the rest.
+    Costs the session handshake + 1 search + 1-2 requests per expanded category."""
+    known = cache_entries(load_category_cache())
+    by_path = {e["path"]: e for e in known}
+    targets = search_entries(api.search(query, store_id))
+    learnt, children, seen, hint = list(targets), [], set(), None
+    for t in targets:
+        slug = category_slug(t["path"])
+        if not slug or slug in seen or len(seen) >= expand:
+            continue
+        seen.add(slug)
+        try:
+            entries, browse = expand_category(api, t, known)
+        except ApiError:
+            continue
+        hint = hint or browse
+        learnt += entries
+        children += entries
+    fresh = {e["path"]: e for e in children}
+    for t in targets:  # fuller name/breadcrumbs when the category is known
+        better = fresh.get(t["path"]) or by_path.get(t["path"]) or t
+        if not t["name"] or len(better["crumbs"]) > len(t["crumbs"]):
+            t.update(name=better["name"] or t["name"], crumbs=better["crumbs"], kind=better["kind"])
+    target_paths = {t["path"] for t in targets}
+    # Only what hangs off the expanded categories: the parent's response also lists their siblings.
+    bases = tuple(f"/shop/{slug}/" for slug in seen)
+    scope = [e for e in fresh.values() if e["path"] not in target_paths
+             and (e["path"].startswith(bases) or any(c in e["crumbs"] for c in
+                  [t["name"] for t in targets if category_slug(t["path"]) in seen and t["name"]]))]
+    related = find_categories(scope, query)
+    remember_categories(learnt)
+    return targets, related, hint
+
+
+def crawl_categories(api):
+    """Walk the whole catalogue into the cache. Resumable: progress is saved after every batch."""
+    cache = load_category_cache()
+    state = cache.get("crawl")
+    if state:
+        print(f"Resuming the full crawl: {len(state['items'])} listings collected, "
+              f"{len(state['queue'])} categories queued.", file=sys.stderr)
+    else:
+        state = cache["crawl"] = {"started": time.time(), "items": [], "queue": [], "queued": []}
+    index, queue = state["items"], state["queue"]
+    seen, queued = {e["path"] for e in index}, set(state["queued"])
 
     def add(item, crumbs):
-        if not item.get("url"):
-            return
-        path = listing_path(item["url"])
-        if path in seen:
-            return
-        seen.add(path)
-        kind = {"filters": "preset", "portalpage": "portal"}.get(item.get("type")) or \
-            ("final" if item.get("final") else "section")
-        index.append({"name": item["name"].strip(), "path": path, "crumbs": crumbs, "kind": kind})
+        e = category_entry(item, crumbs)
+        if e and e["path"] not in seen:
+            seen.add(e["path"])
+            index.append(e)
 
     def walk(items, crumbs):
         for it in items or []:
@@ -373,80 +611,114 @@ def build_category_index(api):
                 # Categories cross-link (the same child under several parents), so fetch each once.
                 if it["code"] not in queued:
                     queued.add(it["code"])
-                    queue.append((it["code"], crumbs + [it["name"].strip()]))
+                    queue.append([it["code"], crumbs + [it["name"].strip()]])
             else:  # presets hanging off a final category
                 walk(it.get("subItems"), crumbs + [it["name"].strip()])
 
-    for top in api.catalog().get("subItems") or []:
-        add(top, [])
-        walk(top.get("subItems"), [top["name"].strip()])
+    def save():
+        state["queued"] = sorted(queued)
+        save_category_cache(cache)
 
     def fetch(code):
         try:
             return api.catalog(code).get("subItems") or []
-        except (ApiError, requests.RequestException):
+        except ApiError:
             return []
 
-    api._ensure_session()
-    with ThreadPoolExecutor(8) as ex:
-        while queue:
-            batch, queue[:] = list(queue), []
-            for (_, crumbs), subs in zip(batch, ex.map(fetch, [code for code, _ in batch])):
-                walk(subs, crumbs)
+    try:
+        if not index:
+            for top in api.catalog().get("subItems") or []:
+                add(top, [])
+                walk(top.get("subItems"), [top["name"].strip()])
+            save()
+        api._ensure_session()
+        with ThreadPoolExecutor(8) as ex:
+            while queue:
+                batch = queue[:CRAWL_BATCH]
+                for (_, crumbs), subs in zip(batch, ex.map(fetch, [code for code, _ in batch])):
+                    walk(subs, crumbs)
+                del queue[:len(batch)]
+                save()
+                print(f"  {len(index)} listings, {len(queue)} categories still queued", file=sys.stderr)
+    except (KeyboardInterrupt, requests.RequestException) as e:
+        save()
+        die(f"full crawl interrupted ({type(e).__name__}); progress is saved "
+            f"({len(index)} listings, {len(queue)} categories queued). "
+            "Run `epicentrk categories --full-crawl` again to resume.")
+    cache.update(built=time.time(), items=index)
+    del cache["crawl"]
+    save_category_cache(cache)
     return index
 
 
-def category_index(api, refresh=False):
-    try:
-        cached = json.loads(CATEGORY_CACHE.read_text())
-        if not refresh and time.time() - cached["built"] < CATEGORY_CACHE_TTL:
-            return cached["items"]
-    except (FileNotFoundError, ValueError, KeyError):
-        pass
-    print("Building the category index (one-off, ~550 requests; ~10 s, longer with --delay)…",
-          file=sys.stderr)
-    items = build_category_index(api)
-    CATEGORY_CACHE.parent.mkdir(exist_ok=True)
-    CATEGORY_CACHE.write_text(json.dumps({"built": time.time(), "items": items}, ensure_ascii=False))
-    return items
+def print_category_hits(hits, limit, more="--limit"):
+    for e in hits[:limit]:
+        kind = "" if e["kind"] in ("final", "section") else f" [{e['kind']}]"
+        crumbs = f"   ({' › '.join(e['crumbs'])})" if e["crumbs"] else ""
+        found = f"   [{e['found']} goods found]" if e.get("found") else ""
+        print(f"- {e['name'] or '(listing)'}{kind} → {e['path']}{crumbs}{found}")
+    if len(hits) > limit:
+        print(f"… +{len(hits) - limit} more ({more})")
 
 
-def find_categories(index, query):
-    # Crude stemming so "ламінату" finds "Ламінат": compare word prefixes.
-    stems = [w[: max(4, len(w) - 2)] for w in query.casefold().split()]
-    kind_rank = {"final": 0, "section": 1, "portal": 2, "preset": 3}
-    hits = []
-    for e in index:
-        name = e["name"].casefold()
-        if all(s in name for s in stems):
-            score = 0
-        elif all(s in " ".join(e["crumbs"] + [e["name"]]).casefold() for s in stems):
-            score = 1
-        else:
-            continue
-        hits.append((score, kind_rank.get(e["kind"], 9), len(name), e))
-    return [h[-1] for h in sorted(hits, key=lambda h: h[:3])]
+def cache_summary(cache):
+    n = len(cache_entries(cache))
+    if cache.get("built"):
+        day = datetime.date.fromtimestamp(cache["built"]).isoformat()
+        return f"{n} listings, full crawl of {day}"
+    return f"{n} listings collected from earlier lookups"
 
 
 # --- commands ---------------------------------------------------------------
 
+def cmd_category_find(api, args, state):
+    cache = load_category_cache()
+    if not args.live:
+        # A name match in the cache answers the question for free; anything weaker goes to the site.
+        hits = find_categories(cache_entries(cache), args.find, names_only=not args.offline)
+        if hits or args.offline:
+            if args.json:
+                return dump(hits[: args.limit or 20])
+            if not hits:
+                return print(f"Nothing in the local cache matches '{args.find}' ({cache_summary(cache)}). "
+                             "Drop --offline to ask the site.")
+            print_category_hits(hits, args.limit or 20)
+            print(f"\nFrom the local cache ({cache_summary(cache)}), 0 requests. "
+                  "Not what you need? Add --live to ask the site search.")
+            return
+    targets, related, hint = find_live(api, args.find, resolve_store(args, state), args.expand)
+    if args.json:
+        return dump({"search": targets, "related": related[: args.limit or 10]})
+    if not targets:
+        return print(f"The site search suggests no category for '{args.find}'. Try other words, "
+                     f"`epicentrk search \"{args.find}\"` to see the goods, or browse with "
+                     "`epicentrk categories [slug]`.")
+    print("Site search points at (categories of the goods it found, biggest first):"
+          if targets[0].get("found") is not None else "Site search redirects to:")
+    print_category_hits(targets, 5, more="less relevant; --json lists all")
+    if related:
+        print("\nMatching subcategories and presets there:")
+        print_category_hits(related, args.limit or 10)
+    if hint:
+        print(f"\nEvery subcategory and preset around the first one: `epicentrk categories {hint} --depth 2`")
+    print(f"({api.request_count} requests)")
+
+
 def cmd_categories(api, args, state):
-    if args.find or args.refresh:
-        index = category_index(api, refresh=args.refresh)
-        if not args.find:
-            return print(f"Category index rebuilt: {len(index)} listings")
-        hits = find_categories(index, args.find)
-        if args.json:
-            return dump(hits[: args.limit])
-        if not hits:
-            return print(f"No categories match '{args.find}'. Try a shorter word or `epicentrk search`.")
-        for e in hits[: args.limit]:
-            kind = "" if e["kind"] in ("final", "section") else f" [{e['kind']}]"
-            print(f"- {e['name']}{kind} → {e['path']}   ({' › '.join(e['crumbs'])})")
-        if len(hits) > args.limit:
-            print(f"… +{len(hits) - args.limit} more (--limit)")
-        return
+    if args.full_crawl:
+        if args.find:
+            die("--full-crawl and --find don't combine: --find never needs the full crawl")
+        est = 550 * max(api.delay, 0.02) / 60
+        print("WARNING: crawling the WHOLE category tree: about 550 HTTP requests, "
+              f"roughly {est:.0f} min at the current --delay ({api.delay:g} s). `categories --find` does not "
+              "need this. Progress is saved every "
+              f"{CRAWL_BATCH} requests; an interrupted run resumes when started again.", file=sys.stderr)
+        index = crawl_categories(api)
+        return print(f"Category index rebuilt: {len(index)} listings ({api.request_count} requests)")
+    if args.find:
+        return cmd_category_find(api, args, state)
     data = api.catalog(args.slug)
+    remember_categories(catalog_entries(data, cache_entries(load_category_cache())))
     if args.json:
         return dump(data)
     item = data.get("item")
@@ -477,6 +749,7 @@ def cmd_search(api, args, state):
     store_id = resolve_store(args, state)
     price = parse_range(args.price) if args.price else None
     data = api.search(args.query, store_id, page=args.page, brands=args.brand, price=price)
+    remember_categories(search_entries(data))
     if args.json:
         return dump(data)
     if data.get("direct"):
@@ -791,9 +1064,21 @@ def main(argv=None):
     p = sub.add_parser("categories", parents=[common], help="browse the category tree")
     p.add_argument("slug", nargs="?", help="category slug; omit for the top level")
     p.add_argument("--depth", type=int, default=1, help="2 = also print grandchildren")
-    p.add_argument("--find", metavar="TEXT", help="search the whole category tree by name (cached index)")
-    p.add_argument("--refresh", action="store_true", help="rebuild the cached category index")
-    p.add_argument("--limit", type=int, default=20, help="with --find: max results")
+    p.add_argument("--find", metavar="TEXT",
+                   help="find the listing for a product query: a free hit from the local cache, otherwise "
+                   "the site search plus the matching category's presets (at most 4 requests)")
+    p.add_argument("--live", action="store_true", help="with --find: skip the local cache, ask the site")
+    p.add_argument("--offline", action="store_true",
+                   help="with --find: local cache only, no requests (also matches parent category names)")
+    p.add_argument("--expand", type=int, default=1, metavar="N",
+                   help="with --find: read subcategories/presets of the first N suggested categories "
+                   "(1 request each, default 1; 0 = none)")
+    p.add_argument("--limit", type=int, help="with --find: max results (default 20 from the cache, "
+                   "10 presets from the site)")
+    p.add_argument("--store", type=int, help=argparse.SUPPRESS)
+    p.add_argument("--full-crawl", action="store_true",
+                   help="crawl the WHOLE tree into the local cache: ~550 requests, 10-15 min with --delay. "
+                   "Never needed for --find; resumable")
     p.set_defaults(func=cmd_categories)
 
     p = sub.add_parser("search", parents=[common], help="full-text product search (also suggests categories)")
